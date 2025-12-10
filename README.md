@@ -124,7 +124,7 @@ jupyter
 
 ## **How to Use**
 
-<<<<<<< HEAD
+
 1. Clone the repository.  
 2. Open any notebook under `notebooks/`.  
 3. Run the cells to reproduce potential plots, bounce profiles, nucleation parameters, and GW spectra.  
@@ -138,4 +138,4 @@ Developed by **Maura Elizabeth Ramirez-Quezada** as part of ongoing research on 
 =======
 This project was developed by **Maura Elizabeth Ramirez-Quezada** as part of her research in phase transitions and thermal field theory in the early universe.  
 It is also part of her personal portfolio to document numerical tools and workflows used in theoretical physics and data analysis.
->>>>>>> c1400c996d33f390fedd91065824e4440d95ada3
+
