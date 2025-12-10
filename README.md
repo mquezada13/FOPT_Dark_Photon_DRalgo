@@ -3,8 +3,8 @@
 
 This repository contains a full numerical pipeline for studying first-order phase transitions in a dark-photon model. It combines effective potentials, 1-loop RGEs, bounce equation solvers, nucleation analysis, and gravitational-wave spectra into one coherent (and occasionally stubborn) framework. If you are here, you are probably either:  
 1) studying thermal field theory,  
-2) debugging your own bounce solver at 3 am,  
-or 3) just curious about why the universe insists on changing phase.  
+2) debugging your own bounce solver at 3 am,  or 
+3) just curious about why the universe insists on changing phase.  
 In any case, welcome.
 =======
 
