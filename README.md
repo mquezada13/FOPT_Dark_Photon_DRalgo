@@ -1,5 +1,5 @@
 <<<<<<< HEAD
-# **FOPT_Dark_Photon_DRAlgo**
+# **FOPT_Dark_Photon**
 ### *RGE-improved effective potentials, bounce solvers, and GW predictions for a dark-photon model*
 
 This repository contains a full numerical pipeline for studying first-order phase transitions in a dark-photon model. It combines effective potentials, 1-loop RGEs, bounce equation solvers, nucleation analysis, and gravitational-wave spectra into one coherent (and occasionally stubborn) framework. If you are here, you are probably either:  
