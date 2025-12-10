@@ -1,0 +1,10 @@
+# === Core scientific stack ===
+numpy
+scipy
+
+# === Plotting ===
+matplotlib
+
+# === Notebooks (optional, but useful in VS Code) ===
+notebook
+jupyterlab
