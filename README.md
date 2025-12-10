@@ -1,5 +1,7 @@
 <<<<<<< HEAD
-# **FOPT_Dark_Photon**
+
+
+# Effective Potential: Dark Photon Model
 ### *RGE-improved effective potentials, bounce solvers, and GW predictions for a dark-photon model*
 
 This repository contains a full numerical pipeline for studying first-order phase transitions in a dark-photon model. It combines effective potentials, 1-loop RGEs, bounce equation solvers, nucleation analysis, and gravitational-wave spectra into one coherent (and occasionally stubborn) framework. If you are here, you are probably either:  
@@ -8,10 +10,6 @@ This repository contains a full numerical pipeline for studying first-order phas
 or 3) just curious about why the universe insists on changing phase.  
 In any case, welcome.
 =======
-# Effective Potential: Dark Photon Model
-
-
->>>>>>> c1400c996d33f390fedd91065824e4440d95ada3
 
 ## **Repository Structure**
     FOPT_Dark_Photon_DRAlgo/
