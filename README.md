@@ -1,6 +1,6 @@
-# Effective_potential_V5: Dark Photon Model
+# Effective Potential: Dark Photon Model
 
-# Effective Potential V5
+
 
 This repository contains the implementation and analysis of the effective potential related to first-order phase transitions in thermal field theory. It includes numerical tools for checking relevant parameters, solving bounce equations, and comparing different approaches (High-T approximation vs. Full potential).
 
