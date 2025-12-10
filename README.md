@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-
-
 # Effective Potential: Dark Photon Model
 ### *RGE-improved effective potentials, bounce solvers, and GW predictions for a dark-photon model*
 
@@ -135,7 +132,4 @@ jupyter
 ## **Author**
 
 Developed by **Maura Elizabeth Ramirez-Quezada** as part of ongoing research on first-order phase transitions, thermal field theory, and cosmological signatures. A mix of physics, numerical methods, and the usual persistence needed to make bounce solvers behave.
-=======
-This project was developed by **Maura Elizabeth Ramirez-Quezada** as part of her research in phase transitions and thermal field theory in the early universe.  
-It is also part of her personal portfolio to document numerical tools and workflows used in theoretical physics and data analysis.
 
