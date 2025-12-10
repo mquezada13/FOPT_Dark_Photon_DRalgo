@@ -6,6 +6,7 @@ This repository contains a full numerical pipeline for studying first-order phas
 2) debugging your own bounce solver at 3 am,  or 
 3) just curious about why the universe insists on changing phase.  
 In any case, welcome.
+
 =======
 
 ## **Repository Structure**
