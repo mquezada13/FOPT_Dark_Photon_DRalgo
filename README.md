@@ -14,38 +14,38 @@ In any case, welcome.
 >>>>>>> c1400c996d33f390fedd91065824e4440d95ada3
 
 ## **Repository Structure**
-FOPT_Dark_Photon_DRAlgo/
-│
-├── notebooks/
-│   ├── FOPT_RGE_check.ipynb
-│   ├── GW_RGE.ipynb
-│   ├── S_RGE_Full_plot.ipynb
-│   ├── S_RGE_HT_plot.ipynb
-│   └── Veff_RGE_plot.ipynb
-│
-├── src/
-│   ├── noRGE/
-│   ├── RGE/
-│   │   ├── RGEsolver.py
-│   │   ├── VeffFunc_RGE.py
-│   │   ├── BounceSolFull_RGE.py
-│   │   ├── BounceSolHighT_RGE.py
-│   │   ├── SE_interpolator.py
-│   │   ├── FOPT_RGE.py
-│   │   ├── GW_RGE_spectrum.py
-│   │   └── __init__.py
-│
-├── utils/
-│   ├── plot_styles.py
-│
-├── data/
-│   └── VT_integralNumeric.dat
-│
-├── plots/
-│
-├── startup.py
-├── requirements.txt
-└── README.md
+    FOPT_Dark_Photon_DRAlgo/
+    │
+    ├── notebooks/
+    │   ├── FOPT_RGE_check.ipynb
+    │   ├── GW_RGE.ipynb
+    │   ├── S_RGE_Full_plot.ipynb
+    │   ├── S_RGE_HT_plot.ipynb
+    │   └── Veff_RGE_plot.ipynb
+    │
+    ├── src/
+    │   ├── noRGE/
+    │   ├── RGE/
+    │   │   ├── RGEsolver.py
+    │   │   ├── VeffFunc_RGE.py
+    │   │   ├── BounceSolFull_RGE.py
+    │   │   ├── BounceSolHighT_RGE.py
+    │   │   ├── SE_interpolator.py
+    │   │   ├── FOPT_RGE.py
+    │   │   ├── GW_RGE_spectrum.py
+    │   │   └── __init__.py
+    │
+    ├── utils/
+    │   ├── plot_styles.py
+    │
+    ├── data/
+    │   └── VT_integralNumeric.dat
+    │
+    ├── plots/
+    │
+    ├── startup.py
+    ├── requirements.txt
+    └── README.md
 
 
 ---
