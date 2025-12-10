@@ -7,7 +7,7 @@ This repository contains a full numerical pipeline for studying first-order phas
 3) just curious about why the universe insists on changing phase.  
 In any case, welcome.
 
-=======
+---
 
 ## **Repository Structure**
     FOPT_Dark_Photon_DRAlgo/
