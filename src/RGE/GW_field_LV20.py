@@ -1,173 +1,284 @@
 # GW_field_LV20.py
-# Espectro GW de colisiones de paredes (campo/runaway) siguiendo LV20 (arXiv:2007.04967).
-# Módulo independiente para usar junto a tu repo actual.
+"""
+Gravitational-wave spectrum from bubble-wall field gradients (runaway regime).
+
+Based on Lewicki & Vaskonen (arXiv:2007.04967) — "LV20".
+
+This module is self-contained: it takes (Tn, alpha, beta/H) and the LV20
+spectral-shape parameters as inputs, and returns a callable h^2 Omega_GW(f)
+evaluated today.
+
+Usage (minimal)
+---------------
+>>> from src.RGE.GW_field_LV20 import GWFieldLV20
+>>> gwf = GWFieldLV20(lv20_key="U1")        # reads cs.LV20_PRESETS["U1"]
+>>> h2  = gwf.from_params(Tn, alpha, betaH)  # returns callable h2(f)
+>>> SNR = gwf.snr_lisa(h2)
+
+Or using the module-level convenience function:
+>>> h2, gwf = from_params(Tn, alpha, betaH, lv20_key="U1")
+"""
 
 from __future__ import annotations
+
 import numpy as np
 from typing import Callable, Dict, Optional, Tuple
-from math import pi
 from scipy.integrate import quad
 
-import constants as cs  # Debe contener: g_dof, Hhund, fmin, fmax, T_LISA, SNRthr, LV20_PRESETS
+import constants as cs
 
-# ------------------ helpers básicos ------------------
+
+# ------------------------------------------------------------------ #
+# Cosmological helpers                                                  #
+# ------------------------------------------------------------------ #
+
 def h_star(T: float) -> float:
-    """h_*(T) en Hz (convención estándar LISA)."""
-    return 1.65e-5 * (T / 100.0) * (cs.g_dof / 100.0)**(1.0/6.0)
+    """
+    Characteristic frequency h_*(T) [Hz] at the transition temperature T [GeV].
+
+    Uses the standard LISA convention (cs.g_dof).
+    """
+    return 1.65e-5 * (T / 100.0) * (cs.g_dof / 100.0) ** (1.0 / 6.0)
+
 
 def T_reh(Tn: float, alpha: float) -> float:
-    """Estimación de T* para superenfriamiento fuerte."""
-    return Tn * (1.0 + max(alpha, 0.0))**0.25
-
-# ------------------ forma espectral LV20 ------------------
-def lv20_shape(omega_over_beta: np.ndarray | float,
-               A: float, omegabar_over_beta: float,
-               a: float, b: float, c: float,
-               d: Optional[float] = None,
-               omegad_over_beta: Optional[float] = None) -> np.ndarray | float:
     """
-    LV20: forma broken power-law (Eq. 19) para gradientes del campo.
-    Notas:
-      - Núcleo con potencia -c: produce pendientes bajas ~ x^{+a} y altas ~ x^{-b}.
-      - En el caso U(1) (con 'd' y 'omegad'), el 'bracket extra' va en el **denominador**.
-    """
-    x = np.asarray(omega_over_beta, dtype=float) / omegabar_over_beta
+    Estimate of the reheating temperature T_* for strongly supercooled transitions.
 
-    # Bracket U(1) (denominador, potencia -1):
-    if (d is None) or (omegad_over_beta is None):
-        pre = 1.0
-    else:
-        y = np.asarray(omega_over_beta, dtype=float) / omegad_over_beta  # omega/omega_d
-        pre = (1.0 + (x**a)/(y**(d - a))) / (1.0 + (omegabar_over_beta/omegad_over_beta)**(d - a))
-        pre = pre**(-1.0)
-
-    core = (A * (a + b) / c) * (b * x**(-a/c) + a * x**(b/c))**(-c)
-    return pre * core
-
-def h2Omega_LV20(f: np.ndarray | float,
-                 alpha: float, beta_over_H: float,
-                 Tstar: float, gstar: float,
-                 lv20_params: Dict[str, float],
-                 h: float = 0.674) -> np.ndarray | float:
+    T_* = Tn * (1 + alpha)^{1/4}.
     """
-    Espectro presente h^2 Omega_GW(f) para LV20 (Ecs. 20–21).
+    return Tn * (1.0 + max(alpha, 0.0)) ** 0.25
+
+
+# ------------------------------------------------------------------ #
+# Spectral shape                                                        #
+# ------------------------------------------------------------------ #
+
+def lv20_shape(
+    omega_over_beta: np.ndarray | float,
+    A: float,
+    omegabar_over_beta: float,
+    a: float,
+    b: float,
+    c: float,
+    d: Optional[float] = None,
+    omegad_over_beta: Optional[float] = None,
+) -> np.ndarray | float:
     """
-    hstar = h_star(Tstar)  # Hz
-    omega_over_beta = (2.0 * np.pi * np.asarray(f, dtype=float)) / (beta_over_H * hstar)
-    S = lv20_shape(omega_over_beta, **lv20_params)
-    pref = 1.67e-5 * (h**2) * (beta_over_H**-2) \
-           * ((alpha/(1.0 + alpha))**2) * ((100.0/gstar)**(1.0/3.0))
+    LV20 broken power-law spectral shape (Eq. 19).
+
+    For the U(1) gauge field case an additional bracket suppression
+    (parameterised by d and omegad_over_beta) is included in the denominator.
+
+    Parameters
+    ----------
+    omega_over_beta     : omega / beta evaluated at the frequencies of interest.
+    A                   : overall amplitude.
+    omegabar_over_beta  : peak position omega_bar / beta.
+    a, b                : low- and high-frequency spectral indices.
+    c                   : broken power-law transition sharpness.
+    d, omegad_over_beta : U(1) gauge suppression parameters (optional).
+    """
+    x    = np.asarray(omega_over_beta, dtype=float) / omegabar_over_beta
+    core = (A * (a + b) / c) * (b * x ** (-a / c) + a * x ** (b / c)) ** (-c)
+
+    if d is None or omegad_over_beta is None:
+        return core
+
+    y   = np.asarray(omega_over_beta, dtype=float) / omegad_over_beta
+    pre = (1.0 + x**a / y ** (d - a)) / (1.0 + (omegabar_over_beta / omegad_over_beta) ** (d - a))
+    return core / pre
+
+
+def h2Omega_LV20(
+    f: np.ndarray | float,
+    alpha: float,
+    beta_over_H: float,
+    Tstar: float,
+    gstar: float,
+    lv20_params: Dict[str, float],
+    h: float = 0.674,
+) -> np.ndarray | float:
+    """
+    GW spectrum h^2 Omega_GW(f) today from LV20, Eqs. (20)-(21).
+
+    Parameters
+    ----------
+    f           : frequency array [Hz].
+    alpha       : transition strength.
+    beta_over_H : inverse transition duration.
+    Tstar       : T_* used to set the peak frequency [GeV].
+    gstar       : effective d.o.f. at T_*.
+    lv20_params : dict of shape parameters forwarded to lv20_shape().
+    h           : dimensionless Hubble constant (default 0.674).
+    """
+    hstar           = h_star(Tstar)
+    omega_over_beta = 2.0 * np.pi * np.asarray(f, dtype=float) / (beta_over_H * hstar)
+    S               = lv20_shape(omega_over_beta, **lv20_params)
+    pref            = (
+        1.67e-5 * h**2
+        * beta_over_H**-2
+        * (alpha / (1.0 + alpha)) ** 2
+        * (100.0 / gstar) ** (1.0 / 3.0)
+    )
     return pref * S
 
-# ------------------ clase principal ------------------
+
+# ------------------------------------------------------------------ #
+# Builder class                                                         #
+# ------------------------------------------------------------------ #
+
 class GWFieldLV20:
     """
-    Builder de espectros LV20 (runaway/campo).
-    Uso mínimo:
-        gwf = GWFieldLV20(g_star=cs.g_dof, lv20_key="U1")   # o pasa lv20_params=...
-        h2 = gwf.from_params(Tn, alpha, betaH, Tstar_mode="reh")   # devuelve callable h2(f)
-        SNR = gwf.snr_lisa(h2)
+    Builder for LV20 field-gradient GW spectra.
+
+    Parameters
+    ----------
+    g_star      : effective d.o.f. at T_* (default: cs.g_dof).
+    lv20_params : explicit shape-parameter dict.  If given, takes priority
+                  over lv20_key.
+    lv20_key    : key into cs.LV20_PRESETS (default "U1").
     """
-    def __init__(self,
-                 g_star: float = cs.g_dof,
-                 lv20_params: Optional[Dict[str, float]] = None,
-                 lv20_key: str = "U1"):
+
+    def __init__(
+        self,
+        g_star: float = cs.g_dof,
+        lv20_params: Optional[Dict[str, float]] = None,
+        lv20_key: str = "U1",
+    ):
         self.g_star = g_star
         if lv20_params is not None:
             self.params = lv20_params
         else:
             try:
                 self.params = cs.LV20_PRESETS[lv20_key]
-            except Exception as e:
-                raise ValueError(f"No encuentro cs.LV20_PRESETS['{lv20_key}']. "
-                                 f"Define LV20_PRESETS en constants.py o pasa lv20_params.") from e
+            except (AttributeError, KeyError) as exc:
+                raise ValueError(
+                    f"cs.LV20_PRESETS['{lv20_key}'] not found.  "
+                    f"Define LV20_PRESETS in constants.py or pass lv20_params directly."
+                ) from exc
 
-    def spectrum(self, Tstar: float, alpha: float, beta_over_H: float) -> Callable[[float | np.ndarray], float | np.ndarray]:
-        """Devuelve h2(f) como callable para T*, alpha, beta/H dados."""
+    def spectrum(
+        self, Tstar: float, alpha: float, beta_over_H: float
+    ) -> Callable[[float | np.ndarray], float | np.ndarray]:
+        """Return h2(f) as a callable for the given (T*, alpha, beta/H)."""
         def _h2(f):
             return h2Omega_LV20(f, alpha, beta_over_H, Tstar, self.g_star, self.params)
         return _h2
 
-    def from_params(self, Tn: float, alpha: float, beta_over_H: float,
-                    Tstar_mode: str = "reh") -> Callable[[float | np.ndarray], float | np.ndarray]:
+    def from_params(
+        self,
+        Tn: float,
+        alpha: float,
+        beta_over_H: float,
+        Tstar_mode: str = "reh",
+    ) -> Callable[[float | np.ndarray], float | np.ndarray]:
         """
-        Construye el callable h2(f) a partir de (Tn, alpha, beta/H).
-        - Tstar_mode:
-            'reh' -> T* = T_reh(Tn, alpha)   (recomendado en superenfriamiento fuerte)
-            'nuc' -> T* = Tn                  (útil para comparar con plantillas antiguas/PTA)
+        Build the callable h2(f) from (Tn, alpha, beta/H).
+
+        Parameters
+        ----------
+        Tstar_mode : 'reh'  ->  T_* = T_reh(Tn, alpha)   (recommended for supercooling)
+                     'nuc'  ->  T_* = Tn
         """
         if Tstar_mode == "reh":
             Tstar = T_reh(Tn, alpha)
         elif Tstar_mode == "nuc":
             Tstar = Tn
         else:
-            raise ValueError("Tstar_mode debe ser 'reh' o 'nuc'.")
+            raise ValueError("Tstar_mode must be 'reh' or 'nuc'.")
         return self.spectrum(Tstar, alpha, beta_over_H)
 
-    # ---------- LISA ----------
+    # ------------------------------------------------------------------ #
+    # LISA sensitivity and SNR                                             #
+    # ------------------------------------------------------------------ #
+
     @staticmethod
     def lisa_noise_h2Omega(f: float) -> float:
         """
-        Tu misma función de ruido LISA (copiada para que el módulo sea autónomo).
+        LISA effective noise power-spectral density in units of h^2 Omega.
+
+        Combines instrumental noise and residual confusion foreground.
         """
-        H100 = cs.Hhund
-        term1 = ((5.76e-48) / (2*np.pi*f)**4) * (1.0 + (0.0004/f)**2)
+        H100  = cs.Hhund
+        term1 = (5.76e-48 / (2 * np.pi * f) ** 4) * (1.0 + (4e-4 / f) ** 2)
         term2 = 3.6e-41
-        term3 = (1.0 + (f/0.025)**2)
-        pref  = (4*np.pi**2)/(3*H100**2) * f**3 * (10.0/3.0)
+        term3 = 1.0 + (f / 0.025) ** 2
+        pref  = (4 * np.pi**2 / (3 * H100**2)) * f**3 * (10.0 / 3.0)
         return pref * (term1 + term2) * term3
 
-    def snr_lisa(self, h2_func: Callable[[float], float],
-                 fmin: float = cs.fmin, fmax: float = cs.fmax,
-                 TLISA: float = cs.T_LISA) -> float:
-        integrand = lambda f: (h2_func(f) / self.lisa_noise_h2Omega(f))**2
-        val, _ = quad(integrand, fmin, fmax, limit=2000)
+    def snr_lisa(
+        self,
+        h2_func: Callable[[float], float],
+        fmin: float = cs.fmin,
+        fmax: float = cs.fmax,
+        TLISA: float = cs.T_LISA,
+    ) -> float:
+        """
+        Signal-to-noise ratio for LISA.
+
+        SNR = sqrt( T_LISA * int_{fmin}^{fmax} [h2(f) / N(f)]^2 df )
+        """
+        integrand = lambda f: (h2_func(f) / self.lisa_noise_h2Omega(f)) ** 2
+        val, _    = quad(integrand, fmin, fmax, limit=2000)
         return float(np.sqrt(TLISA * val))
 
     def h2Omega_thr(self, p: float, f0: float = 1e-3) -> float:
-        func = lambda f: (f / f0)**p
+        """
+        Threshold GW amplitude for detection above cs.SNRthr.
+
+        Computes the amplitude A such that SNR = cs.SNRthr for the power-law
+        spectrum h^2 Omega ~ A (f/f0)^p.
+        """
+        func = lambda f: (f / f0) ** p
         return cs.SNRthr / self.snr_lisa(func)
 
-# ------------------ helper alto nivel ------------------
-def from_params(Tn: float, alpha: float, beta_over_H: float,
-                Tstar_mode: str = "reh",
-                g_star: float = cs.g_dof,
-                lv20_key: str = "U1",
-                lv20_params: Optional[Dict[str, float]] = None
-               ) -> Tuple[Callable[[float | np.ndarray], float | np.ndarray], GWFieldLV20]:
+
+# ------------------------------------------------------------------ #
+# Module-level convenience function                                     #
+# ------------------------------------------------------------------ #
+
+def from_params(
+    Tn: float,
+    alpha: float,
+    beta_over_H: float,
+    Tstar_mode: str = "reh",
+    g_star: float = cs.g_dof,
+    lv20_key: str = "U1",
+    lv20_params: Optional[Dict[str, float]] = None,
+) -> Tuple[Callable[[float | np.ndarray], float | np.ndarray], GWFieldLV20]:
     """
-    Helper: devuelve (h2_callable, builder).
+    Convenience wrapper that returns (h2_callable, GWFieldLV20_builder).
+
+    Parameters mirror GWFieldLV20.from_params plus the constructor arguments.
     """
     builder = GWFieldLV20(g_star=g_star, lv20_params=lv20_params, lv20_key=lv20_key)
-    h2 = builder.from_params(Tn, alpha, beta_over_H, Tstar_mode=Tstar_mode)
+    h2      = builder.from_params(Tn, alpha, beta_over_H, Tstar_mode=Tstar_mode)
     return h2, builder
 
-# ------------------ ejemplo de uso ------------------
+
+# ------------------------------------------------------------------ #
+# Minimal usage example                                                #
+# ------------------------------------------------------------------ #
+
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    # Ejemplo con números de prueba
-    Tn = 1.0e-2     # GeV
-    alpha = 1.0e5
-    betaH = 40.0
+    Tn, alpha, betaH = 1.0e-2, 1.0e5, 40.0
+    f   = np.logspace(-14, -6, 300)
 
-    f = np.logspace(-14, -6, 300)
-
-    # LV20 con T* = T_reh (físico en superenfriamiento)
     h2_reh, gwf = from_params(Tn, alpha, betaH, Tstar_mode="reh", lv20_key="U1")
-    y_reh = np.array([h2_reh(fi) for fi in f])
+    h2_nuc, _   = from_params(Tn, alpha, betaH, Tstar_mode="nuc", lv20_key="U1")
 
-    # LV20 con T* = T_nuc (para comparar)
-    h2_nuc, _ = from_params(Tn, alpha, betaH, Tstar_mode="nuc", lv20_key="U1")
-    y_nuc = np.array([h2_nuc(fi) for fi in f])
-
-    fig, ax = plt.subplots(figsize=(7,5.5), dpi=120)
-    ax.plot(f, y_reh, label="LV20 — T*=T_reh", lw=2.2)
-    ax.plot(f, y_nuc, label="LV20 — T*=T_nuc", lw=2.0, ls="--")
-    ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel(r"$f\,[{\rm Hz}]$")
+    fig, ax = plt.subplots(figsize=(7, 5.5), dpi=120)
+    ax.plot(f, h2_reh(f), lw=2.2, label=r"LV20 — $T_*=T_{\rm reh}$")
+    ax.plot(f, h2_nuc(f), lw=2.0, ls="--", label=r"LV20 — $T_*=T_n$")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel(r"$f\,[\mathrm{Hz}]$")
     ax.set_ylabel(r"$h^2\Omega_{\rm GW}(f)$")
-    ax.set_xlim(1e-11, 1e-6); ax.set_ylim(1e-14, 1e-6)
+    ax.set_xlim(1e-11, 1e-6)
+    ax.set_ylim(1e-14, 1e-6)
     ax.legend(frameon=False)
     plt.tight_layout()
     plt.show()

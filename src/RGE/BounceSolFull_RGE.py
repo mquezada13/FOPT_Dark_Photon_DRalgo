@@ -1,7 +1,13 @@
 # BounceSolFull_RGE.py
-# Author: Maura E. Ramirez-Quezada (updated)
-# Date: 18.09.2025
-# Full effective potential bounce solver (class-based) with (scale, ls0) threading
+"""
+Bounce-solution calculator using the **full** (exact J_B integral) effective potential.
+
+The Euclidean action S_E(T, gD, scale, ls0) is minimised over the thin-wall
+ansatz phi_0, bracketed between the first zero of V_eff beyond the barrier
+and the symmetry-broken minimum.
+
+The quartic tunnelling-potential ansatz follows the approach of Espinosa (1996).
+"""
 
 import numpy as np
 import warnings
@@ -9,188 +15,236 @@ from scipy import optimize
 from scipy.integrate import quad
 
 import constants as cs
-from VeffFunc_RGE import VeffRGE
+from src.RGE.VeffFunc_RGE import VeffRGE
 
 
 class BounceSolver:
     """
-    Bounce solution calculator for phase transitions using the **full** effective potential.
+    Bounce-solution calculator for the full finite-temperature effective potential.
 
-    Public API (all depend on T, gD, scale, ls0):
-        - phi_min_Veff0(T, gD, scale, ls0)
-        - phi_min(T, gD, scale, ls0)
-        - phi_max(T, gD, scale, ls0)
-        - phi_root(T, gD, scale, ls0, scale_factor=1.0, verbose=False)
-        - ConstructVt(phi0, T, gD, scale, ls0)
-        - SE0(phi0, T, gD, scale, ls0, debug=False)
-        - SE(T, gD, scale, ls0)
+    Accepts any VeffRGE instance (or subclass) so the potential can be swapped
+    without modifying this solver.
+
+    Parameters
+    ----------
+    veff : VeffRGE or None
+        Pre-constructed effective potential object.  If None, a default
+        VeffRGE() is created with the standard table path.
+
+    Public Methods
+    --------------
+    phi_min_Veff0(T, gD, scale, ls0) -> float
+        Minimum of the zero-T RGE potential (used as an upper bound).
+    phi_min(T, gD, scale, ls0) -> float
+        Symmetry-broken minimum of the full finite-T potential.
+    phi_max(T, gD, scale, ls0) -> float
+        Location of the potential barrier maximum.
+    phi_root(T, gD, scale, ls0, ...) -> float
+        First zero of V_eff beyond the barrier.
+    ConstructVt(phi0, T, gD, scale, ls0) -> callable
+        Quartic tunnelling-potential matching V and dV at phi0 and phi_max.
+    SE0(phi0, T, gD, scale, ls0) -> float
+        Euclidean action for a fixed phi0.
+    SE(T, gD, scale, ls0) -> (S_E, phi0_opt)
+        Minimised Euclidean action and optimal phi0.
     """
 
-    def __init__(self, veff=None):
-        """
-        Parameters
-        ----------
-        veff : VeffRGE or None
-            If given, use this preconstructed VeffRGE. Otherwise create a new one with default table.
-        """
+    def __init__(self, veff: VeffRGE = None):
         self.veff = veff if veff is not None else VeffRGE()
 
-    # =============================
-    # Vacuum structure
-    # =============================
+    # ------------------------------------------------------------------ #
+    # Vacuum structure                                                     #
+    # ------------------------------------------------------------------ #
+
     def phi_min_Veff0(self, T, gD, scale, ls0, bound_min=(1e-3, 1e7)):
-        """Minimum of the tree-level/zero-T piece used as upper bound helper."""
+        """
+        Locate the minimum of the zero-T RGE potential.
+
+        Used as an upper bound when scanning the broken phase.
+        """
         return optimize.minimize_scalar(
             lambda S: self.veff.Veff0_RGE(S, T, gD, scale, ls0),
             bounds=bound_min,
-            method="bounded"
+            method="bounded",
         ).x
 
-    def get_intervals(self, T, gD, scale, ls0):
-        """Return a few safe bounded intervals depending on current minimum."""
-        phi_min_val = self.phi_min_Veff0(T, gD, scale, ls0)
-        upper_bound = phi_min_val
-        return (1e-7, upper_bound), (1e-7, upper_bound), (1e-7, 1.0)
+    def _get_search_interval(self, T, gD, scale, ls0):
+        """Return the (lower, upper) field interval for the broken-phase search."""
+        upper = self.phi_min_Veff0(T, gD, scale, ls0)
+        return (1e-7, upper)
 
     def phi_min(self, T, gD, scale, ls0):
-        """Symmetry-broken minimum at finite T for the full potential."""
-        phi_interval, _, _ = self.get_intervals(T, gD, scale, ls0)
-        result = optimize.minimize_scalar(
+        """Symmetry-broken minimum of the full finite-T potential."""
+        interval = self._get_search_interval(T, gD, scale, ls0)
+        return optimize.minimize_scalar(
             lambda S: self.veff.Veff(S, T, gD, scale, ls0),
-            bounds=phi_interval,
-            method="bounded"
-        )
-        return result.x
+            bounds=interval,
+            method="bounded",
+        ).x
 
     def phi_max(self, T, gD, scale, ls0):
-        """Location near the top of the barrier (max of -V)."""
-        phi_interval, _, _ = self.get_intervals(T, gD, scale, ls0)
-        result = optimize.minimize_scalar(
+        """Location of the potential barrier (maximum of -V_eff)."""
+        interval = self._get_search_interval(T, gD, scale, ls0)
+        return optimize.minimize_scalar(
             lambda S: -np.real(self.veff.Veff(S, T, gD, scale, ls0)),
-            bounds=phi_interval,
-            method="bounded"
-        )
-        return result.x
+            bounds=interval,
+            method="bounded",
+        ).x
 
     def phi_root(self, T, gD, scale, ls0, scale_factor=1.0, verbose=False):
         """
-        Automatic root finder for Veff (rescaled), robust against shallow barriers.
-        Finds a root between phi_max and phi_min where V crosses zero.
+        First zero of V_eff beyond the barrier top.
+
+        A dense scan between phi_max and phi_min is used to bracket the sign
+        change robustly even when the barrier is shallow or narrow.
+
+        Parameters
+        ----------
+        scale_factor : float
+            Multiplicative rescaling applied to V_eff before root finding.
+            Useful for numerical conditioning; does not affect the root location.
+        verbose : bool
+            If True, prints the bracketing interval for debugging.
         """
-        phiTmax = self.phi_max(T, gD, scale, ls0)
-        phiTmin = self.phi_min(T, gD, scale, ls0)
-        Veff_scaled = lambda S: np.real(scale_factor * self.veff.Veff(S, T, gD, scale, ls0))
+        phi_top = self.phi_max(T, gD, scale, ls0)
+        phi_brk = self.phi_min(T, gD, scale, ls0)
+        Vscaled = lambda S: np.real(scale_factor * self.veff.Veff(S, T, gD, scale, ls0))
 
-        # Dense scan to bracket a sign change
-        S_vals = np.linspace(phiTmax, phiTmin, 50000)
-        V_vals = np.array([Veff_scaled(S) for S in S_vals])
+        S_arr = np.linspace(phi_top, phi_brk, 50_000)
+        V_arr = np.array([Vscaled(s) for s in S_arr])
 
-        sign_changes = np.where(np.sign(V_vals[:-1]) != np.sign(V_vals[1:]))[0]
-        if len(sign_changes) == 0:
-            raise ValueError("No root found beyond the barrier.")
+        changes = np.where(np.sign(V_arr[:-1]) != np.sign(V_arr[1:]))[0]
+        if len(changes) == 0:
+            raise ValueError("No root found between barrier top and broken minimum.")
 
-        i = sign_changes[0]
-        S_low, S_high = S_vals[i], S_vals[i + 1]
+        idx = changes[0]
+        lo, hi = S_arr[idx], S_arr[idx + 1]
 
         if verbose:
-            print(f"[DEBUG] Root bracket: [{S_low:.4e}, {S_high:.4e}]")
-            print(f"[DEBUG] V(S_low)={Veff_scaled(S_low):.4e}, V(S_high)={Veff_scaled(S_high):.4e}")
+            print(f"[phi_root] bracket: [{lo:.4e}, {hi:.4e}]  "
+                  f"V={Vscaled(lo):.4e} / {Vscaled(hi):.4e}")
 
-        result = optimize.root_scalar(Veff_scaled, bracket=(S_low, S_high), xtol=1e-14)
-        return result.root
+        return optimize.root_scalar(Vscaled, bracket=(lo, hi), xtol=1e-14).root
 
-    # =============================
-    # Tunneling potential
-    # =============================
+    # ------------------------------------------------------------------ #
+    # Tunnelling potential                                                 #
+    # ------------------------------------------------------------------ #
+
     def ConstructVt(self, phi0, T, gD, scale, ls0):
         """
-        Construct the quartic ansatz V_t(φ) matching V and dV at φ=φ0 and V at φ=φT (near barrier top).
-        Returns a callable vt(φ).
+        Quartic tunnelling-potential ansatz V_t(phi) matched at phi0 and phi_max.
+
+        Constructs a degree-4 polynomial that satisfies:
+          - V_t(phi0) = V_eff(phi0)
+          - V_t'(phi0) = V_eff'(phi0)
+          - V_t(phi_max) = V_eff(phi_max)
+
+        Returns
+        -------
+        callable  V_t(phi)
         """
-        phiT = self.phi_max(T, gD, scale, ls0)
-        V0 = self.veff.Veff(phi0, T, gD, scale, ls0)
-        epsilon = 1e-9
+        phi_top = self.phi_max(T, gD, scale, ls0)
+        V0      = self.veff.Veff(phi0, T, gD, scale, ls0)
+        eps     = 1e-9
 
-        def dVeff_ds(s):
-            return (self.veff.Veff(s + epsilon, T, gD, scale, ls0) -
-                    self.veff.Veff(s - epsilon, T, gD, scale, ls0)) / (2 * epsilon)
+        def dVeff(s):
+            return (self.veff.Veff(s + eps, T, gD, scale, ls0)
+                    - self.veff.Veff(s - eps, T, gD, scale, ls0)) / (2.0 * eps)
 
-        dV0 = dVeff_ds(phi0)
-        VT = self.veff.Veff(phiT, T, gD, scale, ls0)
+        dV0 = dVeff(phi0)
+        VT  = self.veff.Veff(phi_top, T, gD, scale, ls0)
 
-        d = 3
+        d  = 3
         a1 = V0 / phi0
         a2 = ((d - 1) * phi0 * dV0 - d * V0) / (d * phi0**2)
         a3 = ((d - 1) * phi0 * dV0 - 2 * d * V0) / (d * phi0**3)
 
-        dVt3T = a1 + a2 * (2 * phiT - phi0) + a3 * (3 * phiT - phi0) * (phiT - phi0)
-        d2Vt3T = 2 * a2 + 2 * a3 * (3 * phiT - 2 * phi0)
+        dVt3T  = a1 + a2 * (2 * phi_top - phi0) + a3 * (3 * phi_top - phi0) * (phi_top - phi0)
+        d2Vt3T = 2 * a2 + 2 * a3 * (3 * phi_top - 2 * phi0)
 
-        phi0T = phi0 - phiT
-        c = 4 * phiT**2 * phi0T**2 * phi0**2
+        phi0T = phi0 - phi_top
+        c     = 4 * phi_top**2 * phi0T**2 * phi0**2
 
-        Vt3T = (V0 * phiT / phi0 +
-                (2 * phi0 * dV0 - 3 * V0) / (3 * phi0**2) * phiT * (phiT - phi0) +
-                (2 * phi0 * dV0 - 6 * V0) / (3 * phi0**3) * phiT * (phiT - phi0)**2)
+        Vt3T = (
+            V0 * phi_top / phi0
+            + (2 * phi0 * dV0 - 3 * V0) / (3 * phi0**2) * phi_top * (phi_top - phi0)
+            + (2 * phi0 * dV0 - 6 * V0) / (3 * phi0**3) * phi_top * (phi_top - phi0)**2
+        )
 
-        a0T = (-4 * (VT - Vt3T) * (phi0**2 - 6 * phiT * phi0T) -
-               6 * phiT * (phi0T - phiT) * phi0T * dVt3T +
-               2 * phiT**2 * phi0T**2 * d2Vt3T)
-
+        a0T  = (
+            -4 * (VT - Vt3T) * (phi0**2 - 6 * phi_top * phi0T)
+            - 6 * phi_top * (phi0T - phi_top) * phi0T * dVt3T
+            + 2 * phi_top**2 * phi0T**2 * d2Vt3T
+        )
         Ut3T = 3 * dVt3T**2 + 4 * (VT - Vt3T) * d2Vt3T
-        a4 = (a0T - np.sqrt(a0T**2 - c * Ut3T)) / c if a0T**2 - c * Ut3T > 0 else 0.0
+        disc = a0T**2 - c * Ut3T
+        a4   = (a0T - np.sqrt(disc)) / c if disc > 0 else 0.0
 
-        return lambda phi: (a1 * phi +
-                            a2 * phi * (phi - phi0) +
-                            a3 * phi * (phi - phi0)**2 +
-                            a4 * phi**2 * (phi - phi0)**2)
+        def vt(phi):
+            return (
+                a1 * phi
+                + a2 * phi * (phi - phi0)
+                + a3 * phi * (phi - phi0)**2
+                + a4 * phi**2 * (phi - phi0)**2
+            )
 
-    # =============================
-    # Euclidean action
-    # =============================
+        return vt
+
+    # ------------------------------------------------------------------ #
+    # Euclidean action                                                     #
+    # ------------------------------------------------------------------ #
+
     def SE0(self, phi0, T, gD, scale, ls0, debug=False):
         """
-        Euclidean action integrand using the constructed tunneling potential.
+        Euclidean action S_E for a fixed tunnelling endpoint phi0.
+
+        Computed via:
+          S_E = (32 pi sqrt(2) / 3) * int_0^{phi0} (V_eff - V_t)^{3/2} / (dV_t/dphi)^2 dphi
+
+        Bad evaluation points (non-finite, imaginary, V_eff < V_t) contribute zero.
         """
         vt = self.ConstructVt(phi0, T, gD, scale, ls0)
 
         def integrand(S):
             try:
-                h = max(1e-9, abs(S) * 1e-3)
-                vtS_plus = vt(S + h)
-                vtS_minus = vt(S - h)
-                vtS = vt(S)
-                veffS = self.veff.Veff(S, T, gD, scale, ls0)
+                h       = max(1e-9, abs(S) * 1e-3)
+                vt_p    = vt(S + h)
+                vt_m    = vt(S - h)
+                vt_val  = vt(S)
+                veff_val = self.veff.Veff(S, T, gD, scale, ls0)
 
-                if not all(np.isfinite(x) for x in [vtS_plus, vtS_minus, vtS, veffS]):
+                if not all(np.isfinite(x) for x in [vt_p, vt_m, vt_val, veff_val]):
                     return 0.0
 
-                dvt_ds = (vtS_plus - vtS_minus) / (2 * h)
-                dvt_ds = np.sign(dvt_ds) * np.clip(np.abs(dvt_ds), 1e-65, np.inf)
-
-                v_eff_diff = veffS - vtS
-                if v_eff_diff < 0:
+                dvt   = (vt_p - vt_m) / (2 * h)
+                dvt   = np.sign(dvt) * np.clip(np.abs(dvt), 1e-65, np.inf)
+                diff  = veff_val - vt_val
+                if diff < 0:
                     return 0.0
 
-                return v_eff_diff**1.5 / dvt_ds**2
+                return diff**1.5 / dvt**2
             except Exception:
                 return 0.0
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result = quad(integrand, 0, phi0, limit=20000, epsrel=1e-8, epsabs=1e-8)[0]
+            result = quad(integrand, 0, phi0, limit=20_000, epsrel=1e-8, epsabs=1e-8)[0]
 
-        return (32 * np.pi * np.sqrt(2) / 3) * result
+        return (32.0 * np.pi * np.sqrt(2.0) / 3.0) * result
 
     def SE(self, T, gD, scale, ls0):
         """
-        Minimize S_E(phi0) between the first root (beyond the barrier) and the broken minimum.
+        Minimised Euclidean action S_E(T) and the optimal tunnelling endpoint.
+
+        Returns
+        -------
+        (S_E_min, phi0_opt) : tuple of floats
         """
-        phi1 = self.phi_root(T, gD, scale, ls0)
-        phi2 = self.phi_min(T, gD, scale, ls0)
+        phi_lo = self.phi_root(T, gD, scale, ls0)
+        phi_hi = self.phi_min(T, gD, scale, ls0)
         result = optimize.minimize_scalar(
             lambda S: self.SE0(S, T, gD, scale, ls0),
-            bounds=(phi1, phi2),
-            method="bounded"
+            bounds=(phi_lo, phi_hi),
+            method="bounded",
         )
         return result.fun, result.x
