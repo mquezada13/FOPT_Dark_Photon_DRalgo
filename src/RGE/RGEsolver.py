@@ -59,6 +59,9 @@ class RGESolver:
             cls.beta_mS2(gD2, lambdaS, mS),
         ]
 
+    # Public alias used by notebooks and external callers
+    RGEs_logMu = _rhs
+
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
     # ------------------------------------------------------------------ #
