@@ -12,7 +12,28 @@ is model-independent and does not need to change.
 """
 
 import numpy as np
+from functools import lru_cache
 from scipy.integrate import solve_ivp
+
+
+@lru_cache(maxsize=4096)
+def _run_params_cached(mu: float, gD0: float, lambdaS0: float, mS0: float, mu0: float) -> tuple:
+    """Cached ODE solve for RGE running. All arguments must be plain floats."""
+    y0     = [gD0**2, lambdaS0, mS0]
+    t_span = (np.log(mu0), np.log(mu))
+    sol = solve_ivp(
+        RGESolver._rhs,
+        t_span,
+        y0,
+        method="RK45",
+        t_eval=[np.log(mu)],
+        rtol=1e-8,
+        atol=1e-10,
+    )
+    if not sol.success:
+        raise RuntimeError(f"RGE integration failed: {sol.message}")
+    gD2_run, lambdaS_run, mS_run = sol.y[:, -1]
+    return float(np.sqrt(gD2_run)), float(lambdaS_run), float(mS_run)
 
 
 class RGESolver:
@@ -99,22 +120,6 @@ class RGESolver:
             raise ValueError(
                 f"Scales must be positive; got mu={mu}, mu0={mu0}."
             )
-
-        y0     = [gD0**2, lambdaS0, mS0]
-        t_span = (np.log(mu0), np.log(mu))
-
-        sol = solve_ivp(
-            cls._rhs,
-            t_span,
-            y0,
-            method="RK45",
-            t_eval=[np.log(mu)],
-            rtol=1e-8,
-            atol=1e-10,
+        return _run_params_cached(
+            float(mu), float(gD0), float(lambdaS0), float(mS0), float(mu0)
         )
-
-        if not sol.success:
-            raise RuntimeError(f"RGE integration failed: {sol.message}")
-
-        gD2_run, lambdaS_run, mS_run = sol.y[:, -1]
-        return float(np.sqrt(gD2_run)), float(lambdaS_run), float(mS_run)

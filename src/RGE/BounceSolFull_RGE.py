@@ -41,8 +41,10 @@ class BounceSolver:
         Location of the potential barrier maximum.
     phi_root(T, gD, scale, ls0, ...) -> float
         First zero of V_eff beyond the barrier.
-    ConstructVt(phi0, T, gD, scale, ls0) -> callable
+    ConstructVt(phi0, T, gD, scale, ls0) -> (callable, (a1,a2,a3,a4))
         Quartic tunnelling-potential matching V and dV at phi0 and phi_max.
+    dVt(phi, phi0, a1, a2, a3, a4) -> float
+        Analytic derivative of V_t.
     SE0(phi0, T, gD, scale, ls0) -> float
         Euclidean action for a fixed phi0.
     SE(T, gD, scale, ls0) -> (S_E, phi0_opt)
@@ -91,27 +93,29 @@ class BounceSolver:
             method="bounded",
         ).x
 
-    def phi_root(self, T, gD, scale, ls0, scale_factor=1.0, verbose=False):
+    def phi_root(self, T, gD, scale, ls0, scale_factor=1.0, verbose=False,
+                 _phi_top=None, _phi_hi=None):
         """
         First zero of V_eff beyond the barrier top.
 
-        A dense scan between phi_max and phi_min is used to bracket the sign
-        change robustly even when the barrier is shallow or narrow.
+        A vectorised scan over 1 000 field points brackets the sign change,
+        then root_scalar refines to xtol=1e-14.
 
         Parameters
         ----------
         scale_factor : float
-            Multiplicative rescaling applied to V_eff before root finding.
-            Useful for numerical conditioning; does not affect the root location.
+            Multiplicative rescaling of V_eff before root finding.
         verbose : bool
             If True, prints the bracketing interval for debugging.
+        _phi_top, _phi_hi : float or None
+            Pre-computed barrier top and broken minimum; recomputed if None.
         """
-        phi_top = self.phi_max(T, gD, scale, ls0)
-        phi_brk = self.phi_min(T, gD, scale, ls0)
+        phi_top = _phi_top if _phi_top is not None else self.phi_max(T, gD, scale, ls0)
+        phi_brk = _phi_hi  if _phi_hi  is not None else self.phi_min(T, gD, scale, ls0)
         Vscaled = lambda S: np.real(scale_factor * self.veff.Veff(S, T, gD, scale, ls0))
 
-        S_arr = np.linspace(phi_top, phi_brk, 50_000)
-        V_arr = np.array([Vscaled(s) for s in S_arr])
+        S_arr = np.linspace(phi_top, phi_brk, 1_000)
+        V_arr = Vscaled(S_arr)
 
         changes = np.where(np.sign(V_arr[:-1]) != np.sign(V_arr[1:]))[0]
         if len(changes) == 0:
@@ -130,7 +134,7 @@ class BounceSolver:
     # Tunnelling potential                                                 #
     # ------------------------------------------------------------------ #
 
-    def ConstructVt(self, phi0, T, gD, scale, ls0):
+    def ConstructVt(self, phi0, T, gD, scale, ls0, _phi_top=None):
         """
         Quartic tunnelling-potential ansatz V_t(phi) matched at phi0 and phi_max.
 
@@ -141,9 +145,10 @@ class BounceSolver:
 
         Returns
         -------
-        callable  V_t(phi)
+        vt     : callable         V_t(phi)
+        coeffs : (a1, a2, a3, a4) polynomial coefficients for dVt
         """
-        phi_top = self.phi_max(T, gD, scale, ls0)
+        phi_top = _phi_top if _phi_top is not None else self.phi_max(T, gD, scale, ls0)
         V0      = self.veff.Veff(phi0, T, gD, scale, ls0)
         eps     = 1e-9
 
@@ -188,47 +193,48 @@ class BounceSolver:
                 + a4 * phi**2 * (phi - phi0)**2
             )
 
-        return vt
+        return vt, (a1, a2, a3, a4)
+
+    @staticmethod
+    def dVt(phi, phi0, a1, a2, a3, a4):
+        """Analytic derivative of V_t with respect to phi."""
+        return (
+            a1
+            + a2 * (2 * phi - phi0)
+            + a3 * (3 * phi**2 - 4 * phi * phi0 + phi0**2)
+            + a4 * (4 * phi**3 - 6 * phi**2 * phi0 + 2 * phi * phi0**2)
+        )
 
     # ------------------------------------------------------------------ #
     # Euclidean action                                                     #
     # ------------------------------------------------------------------ #
 
-    def SE0(self, phi0, T, gD, scale, ls0, debug=False):
+    def SE0(self, phi0, T, gD, scale, ls0, _phi_top=None):
         """
         Euclidean action S_E for a fixed tunnelling endpoint phi0.
 
         Computed via:
           S_E = (32 pi sqrt(2) / 3) * int_0^{phi0} (V_eff - V_t)^{3/2} / (dV_t/dphi)^2 dphi
 
-        Bad evaluation points (non-finite, imaginary, V_eff < V_t) contribute zero.
+        Bad evaluation points (non-finite or V_eff < V_t) contribute zero.
         """
-        vt = self.ConstructVt(phi0, T, gD, scale, ls0)
+        phi_top = _phi_top if _phi_top is not None else self.phi_max(T, gD, scale, ls0)
+        vt, (a1, a2, a3, a4) = self.ConstructVt(phi0, T, gD, scale, ls0, _phi_top=phi_top)
 
         def integrand(S):
-            try:
-                h       = max(1e-9, abs(S) * 1e-3)
-                vt_p    = vt(S + h)
-                vt_m    = vt(S - h)
-                vt_val  = vt(S)
-                veff_val = self.veff.Veff(S, T, gD, scale, ls0)
+            vt_val   = vt(S)
+            veff_val = np.real(self.veff.Veff(S, T, gD, scale, ls0))
+            dvt_val  = self.dVt(S, phi0, a1, a2, a3, a4)
 
-                if not all(np.isfinite(x) for x in [vt_p, vt_m, vt_val, veff_val]):
-                    return 0.0
-
-                dvt   = (vt_p - vt_m) / (2 * h)
-                dvt   = np.sign(dvt) * np.clip(np.abs(dvt), 1e-65, np.inf)
-                diff  = veff_val - vt_val
-                if diff < 0:
-                    return 0.0
-
-                return diff**1.5 / dvt**2
-            except Exception:
+            dvt_val = np.sign(dvt_val) * max(abs(dvt_val), 1e-65)
+            diff    = max(veff_val - vt_val, 0.0)
+            if not (np.isfinite(diff) and np.isfinite(dvt_val)):
                 return 0.0
+            return diff**1.5 / dvt_val**2
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result = quad(integrand, 0, phi0, limit=20_000, epsrel=1e-8, epsabs=1e-8)[0]
+            result = quad(integrand, 0, phi0, limit=2_000, epsrel=1e-8, epsabs=1e-8)[0]
 
         return (32.0 * np.pi * np.sqrt(2.0) / 3.0) * result
 
@@ -236,14 +242,29 @@ class BounceSolver:
         """
         Minimised Euclidean action S_E(T) and the optimal tunnelling endpoint.
 
+        phi_min_Veff0, phi_max, and phi_min are each computed exactly once and
+        reused throughout sub-calls to avoid redundant minimisations.
+
         Returns
         -------
         (S_E_min, phi0_opt) : tuple of floats
         """
-        phi_lo = self.phi_root(T, gD, scale, ls0)
-        phi_hi = self.phi_min(T, gD, scale, ls0)
+        # Compute the key field values once
+        phi_0   = self.phi_min_Veff0(T, gD, scale, ls0)
+        interval = (1e-7, phi_0)
+
+        phi_top = optimize.minimize_scalar(
+            lambda S: -np.real(self.veff.Veff(S, T, gD, scale, ls0)),
+            bounds=interval, method="bounded").x
+        phi_hi = optimize.minimize_scalar(
+            lambda S: self.veff.Veff(S, T, gD, scale, ls0),
+            bounds=interval, method="bounded").x
+
+        phi_lo = self.phi_root(T, gD, scale, ls0,
+                               _phi_top=phi_top, _phi_hi=phi_hi)
+
         result = optimize.minimize_scalar(
-            lambda S: self.SE0(S, T, gD, scale, ls0),
+            lambda S: self.SE0(S, T, gD, scale, ls0, _phi_top=phi_top),
             bounds=(phi_lo, phi_hi),
             method="bounded",
         )

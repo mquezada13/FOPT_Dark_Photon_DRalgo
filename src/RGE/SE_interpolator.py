@@ -15,6 +15,7 @@ with arrays:
     gD_vals    : shape (n_gD,)
 """
 
+import bisect
 import os
 import numpy as np
 from scipy.interpolate import UnivariateSpline
@@ -70,21 +71,38 @@ class SEInterpolator:
     # Public interface                                                     #
     # ------------------------------------------------------------------ #
 
+    def _interp_gD(self, T: float, gD: float) -> float:
+        """Linearly interpolate log10(S_E) in gD between the two nearest grid values."""
+        gD_grid = sorted(self.spline_dict.keys())
+        key = float(gD)
+        if key < gD_grid[0] or key > gD_grid[-1]:
+            raise ValueError(
+                f"gD={gD} is outside the grid range [{gD_grid[0]}, {gD_grid[-1]}]."
+            )
+        idx  = bisect.bisect_left(gD_grid, key)
+        if idx == 0:
+            return float(self.spline_dict[gD_grid[0]](T))
+        g_lo = gD_grid[idx - 1]
+        g_hi = gD_grid[idx]
+        w    = (key - g_lo) / (g_hi - g_lo)
+        return (1.0 - w) * float(self.spline_dict[g_lo](T)) + w * float(self.spline_dict[g_hi](T))
+
     def log10SE(self, T: float, gD: float) -> float:
         """
         Return log10(S_E(T, gD)) evaluated on the spline.
 
+        If gD is not exactly on the grid, linearly interpolates between the
+        two nearest tabulated gD values.
+
         Parameters
         ----------
         T  : temperature [GeV]
-        gD : dark gauge coupling (must be one of the tabulated values)
+        gD : dark gauge coupling (within the tabulated range)
         """
         key = float(gD)
-        if key not in self.spline_dict:
-            raise ValueError(
-                f"gD={gD} is not in the grid.  Available values: {list(self.spline_dict.keys())}"
-            )
-        return float(self.spline_dict[key](T))
+        if key in self.spline_dict:
+            return float(self.spline_dict[key](T))
+        return self._interp_gD(T, gD)
 
     def SE(self, T: float, gD: float) -> float:
         """Return S_E(T, gD) in linear scale."""
@@ -94,23 +112,34 @@ class SEInterpolator:
         """
         Return a UnivariateSpline of S_E / T (linear) for a given gD.
 
-        This spline is used by FOPT_RGE.FOPTUtilities.beta to compute
-        d(S/T)/dT analytically via spline differentiation.
+        If gD is not exactly on the grid, S_E/T is linearly interpolated in
+        gD between the two nearest tabulated columns before fitting the spline.
 
         Parameters
         ----------
-        gD     : dark gauge coupling (must be one of the tabulated values)
-        smooth : smoothing factor for this secondary spline (default 10,
-                 intentionally larger than for the log spline).
+        gD     : dark gauge coupling (within the tabulated range)
+        smooth : smoothing factor for this secondary spline (default 10).
         """
-        j = np.where(np.isclose(self.gD_vals, float(gD)))[0]
-        if len(j) == 0:
-            raise ValueError(f"gD={gD} not found in grid.")
-        j = j[0]
+        gD_arr = self.gD_vals
+        key    = float(gD)
+        j_exact = np.where(np.isclose(gD_arr, key))[0]
 
-        col   = self._raw_logS[:, j]
-        mask  = np.isfinite(col)
-        SE_ln = 10.0 ** col[mask]
-        ST    = SE_ln / self.T_vals[mask]
+        if len(j_exact) > 0:
+            col  = self._raw_logS[:, j_exact[0]]
+            mask = np.isfinite(col)
+            ST   = 10.0 ** col[mask] / self.T_vals[mask]
+            return UnivariateSpline(self.T_vals[mask], ST, s=smooth)
+
+        # Interpolate between the two nearest columns
+        idx  = bisect.bisect_left(list(gD_arr), key)
+        idx  = min(max(idx, 1), len(gD_arr) - 1)
+        g_lo, g_hi = gD_arr[idx - 1], gD_arr[idx]
+        w    = (key - g_lo) / (g_hi - g_lo)
+
+        col_lo = self._raw_logS[:, idx - 1]
+        col_hi = self._raw_logS[:, idx]
+        mask   = np.isfinite(col_lo) & np.isfinite(col_hi)
+        col_ip = (1.0 - w) * col_lo[mask] + w * col_hi[mask]
+        ST     = 10.0 ** col_ip / self.T_vals[mask]
 
         return UnivariateSpline(self.T_vals[mask], ST, s=smooth)

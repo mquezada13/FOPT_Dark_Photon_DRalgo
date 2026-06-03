@@ -54,6 +54,11 @@ class VeffRGE:
             fill_value=0.0,
             bounds_error=False,
         )
+        # V0 = Veff(S=0) is constant for fixed (T, gD0, scale, lambdaS0).
+        # Cache it to avoid recomputing inside tight loops (e.g. quad integrand).
+        self._v0_cache_full:  dict = {}
+        self._v0_cache_highT: dict = {}
+        self._v0_cache_zero:  dict = {}
 
     # ------------------------------------------------------------------ #
     # Tree-level potential and field-dependent masses                      #
@@ -235,7 +240,12 @@ class VeffRGE:
         """
         mu = scale * T
         gD, lambdaS, mS = RGESolver.run_params(mu, gD0, lambdaS0, cs.mS0)
-        V0 = self.Vtree(0, lambdaS, mS) + self.Vcw(0, mu, gD, lambdaS, mS)
+        key = (float(T), float(gD0), float(scale), float(lambdaS0))
+        if key not in self._v0_cache_zero:
+            self._v0_cache_zero[key] = complex(
+                self.Vtree(0, lambdaS, mS) + self.Vcw(0, mu, gD, lambdaS, mS)
+            )
+        V0 = self._v0_cache_zero[key]
         return np.real(self.Vtree(S, lambdaS, mS) + self.Vcw(S, mu, gD, lambdaS, mS) - V0)
 
     def Veff(self, S, T, gD0, scale, lambdaS0):
@@ -255,13 +265,15 @@ class VeffRGE:
         """
         mu = scale * T
         gD, lambdaS, mS = RGESolver.run_params(mu, gD0, lambdaS0, cs.mS0)
-
-        V0 = (
-            self.Vtree(0, lambdaS, mS)
-            + self.Vcw(0, mu, gD, lambdaS, mS)
-            + self.VTfull(0, T, gD, lambdaS, mS)
-            + self.Vdaisy(0, T, gD, lambdaS, mS)
-        )
+        key = (float(T), float(gD0), float(scale), float(lambdaS0))
+        if key not in self._v0_cache_full:
+            self._v0_cache_full[key] = complex(
+                self.Vtree(0, lambdaS, mS)
+                + self.Vcw(0, mu, gD, lambdaS, mS)
+                + self.VTfull(0, T, gD, lambdaS, mS)
+                + self.Vdaisy(0, T, gD, lambdaS, mS)
+            )
+        V0 = self._v0_cache_full[key]
         result = (
             self.Vtree(S, lambdaS, mS)
             + self.Vcw(S, mu, gD, lambdaS, mS)
@@ -288,13 +300,15 @@ class VeffRGE:
         """
         mu = scale * T
         gD, lambdaS, mS = RGESolver.run_params(mu, gD0, lambdaS0, cs.mS0)
-
-        V0 = (
-            self.Vtree(0, lambdaS, mS)
-            + self.Vcw(0, mu, gD, lambdaS, mS)
-            + self.V_highT(0, T, gD, lambdaS, mS)
-            + self.Vdaisy(0, T, gD, lambdaS, mS)
-        )
+        key = (float(T), float(gD0), float(scale), float(lambdaS0))
+        if key not in self._v0_cache_highT:
+            self._v0_cache_highT[key] = complex(
+                self.Vtree(0, lambdaS, mS)
+                + self.Vcw(0, mu, gD, lambdaS, mS)
+                + self.V_highT(0, T, gD, lambdaS, mS)
+                + self.Vdaisy(0, T, gD, lambdaS, mS)
+            )
+        V0 = self._v0_cache_highT[key]
         result = (
             self.Vtree(S, lambdaS, mS)
             + self.Vcw(S, mu, gD, lambdaS, mS)

@@ -72,24 +72,27 @@ class BounceSolverHighT:
             method="bounded",
         ).x
 
-    def phi_root_HT(self, T, gD, scale, ls0, verbose=False):
+    def phi_root_HT(self, T, gD, scale, ls0, verbose=False,
+                    _phi_top=None, _phi_hi=None):
         """
         First zero of V_eff_HighT beyond the barrier top.
 
-        Uses a dense scan to bracket the sign change robustly even when
-        the barrier is shallow or narrow.
+        A vectorised scan over 1 000 field points brackets the sign change,
+        then root_scalar refines to xtol=1e-14.
 
         Parameters
         ----------
         verbose : bool
             If True, prints the bracketing interval for debugging.
+        _phi_top, _phi_hi : float or None
+            Pre-computed barrier top and broken minimum; recomputed if None.
         """
-        phi_top = self.phi_max(T, gD, scale, ls0)
-        phi_brk = self.phi_min_Veff0(T, gD, scale, ls0)
+        phi_top = _phi_top if _phi_top is not None else self.phi_max(T, gD, scale, ls0)
+        phi_brk = _phi_hi  if _phi_hi  is not None else self.phi_min_Veff0(T, gD, scale, ls0)
         Vscaled = lambda S: np.real(self.veff.Veff_HighT(S, T, gD, scale, ls0))
 
-        S_arr = np.linspace(phi_top, phi_brk, 50_000)
-        V_arr = np.array([Vscaled(s) for s in S_arr])
+        S_arr = np.linspace(phi_top, phi_brk, 1_000)
+        V_arr = Vscaled(S_arr)
 
         changes = np.where(np.sign(V_arr[:-1]) != np.sign(V_arr[1:]))[0]
         if len(changes) == 0:
@@ -108,16 +111,16 @@ class BounceSolverHighT:
     # Tunnelling potential                                                 #
     # ------------------------------------------------------------------ #
 
-    def ConstructVt(self, phi0, T, gD, scale, ls0):
+    def ConstructVt(self, phi0, T, gD, scale, ls0, _phi_top=None):
         """
         Quartic tunnelling-potential ansatz V_t(phi) matched at phi0 and phi_max.
 
         Returns
         -------
-        vt : callable     V_t(phi)
-        coeffs : tuple    (a1, a2, a3, a4) — passed to dVt for efficiency.
+        vt     : callable         V_t(phi)
+        coeffs : (a1, a2, a3, a4) polynomial coefficients for dVt
         """
-        phi_top = self.phi_max(T, gD, scale, ls0)
+        phi_top = _phi_top if _phi_top is not None else self.phi_max(T, gD, scale, ls0)
         V0      = self.veff.Veff_HighT(phi0, T, gD, scale, ls0)
         eps     = 1e-9
 
@@ -164,7 +167,8 @@ class BounceSolverHighT:
 
         return vt, (a1, a2, a3, a4)
 
-    def dVt(self, phi, phi0, a1, a2, a3, a4):
+    @staticmethod
+    def dVt(phi, phi0, a1, a2, a3, a4):
         """Analytic derivative of V_t with respect to phi."""
         return (
             a1
@@ -177,12 +181,13 @@ class BounceSolverHighT:
     # Euclidean action                                                     #
     # ------------------------------------------------------------------ #
 
-    def SE0(self, phi0, T, gD, scale, ls0):
+    def SE0(self, phi0, T, gD, scale, ls0, _phi_top=None):
         """
         Euclidean action S_E for a fixed tunnelling endpoint phi0,
         evaluated with the high-T potential.
         """
-        vt, (a1, a2, a3, a4) = self.ConstructVt(phi0, T, gD, scale, ls0)
+        phi_top = _phi_top if _phi_top is not None else self.phi_max(T, gD, scale, ls0)
+        vt, (a1, a2, a3, a4) = self.ConstructVt(phi0, T, gD, scale, ls0, _phi_top=phi_top)
 
         def integrand(S):
             vt_val   = vt(S)
@@ -200,14 +205,26 @@ class BounceSolverHighT:
         """
         Minimised Euclidean action S_E(T) and the optimal tunnelling endpoint.
 
+        phi_min_Veff0 and phi_max are each computed exactly once and reused
+        throughout sub-calls to avoid redundant minimisations.
+
         Returns
         -------
         (S_E_min, phi0_opt) : tuple of floats
         """
-        phi_lo = self.phi_root_HT(T, gD, scale, ls0)
-        phi_hi = self.phi_min_Veff0(T, gD, scale, ls0)
+        # Compute the key field values once
+        phi_hi  = self.phi_min_Veff0(T, gD, scale, ls0)
+        interval = (1e-7, phi_hi)
+
+        phi_top = optimize.minimize_scalar(
+            lambda S: -np.real(self.veff.Veff_HighT(S, T, gD, scale, ls0)),
+            bounds=interval, method="bounded").x
+
+        phi_lo = self.phi_root_HT(T, gD, scale, ls0,
+                                  _phi_top=phi_top, _phi_hi=phi_hi)
+
         result = optimize.minimize_scalar(
-            lambda S: self.SE0(S, T, gD, scale, ls0),
+            lambda S: self.SE0(S, T, gD, scale, ls0, _phi_top=phi_top),
             bounds=(phi_lo, phi_hi),
             method="bounded",
         )

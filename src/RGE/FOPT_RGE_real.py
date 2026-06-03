@@ -45,13 +45,14 @@ class FOPTUtilities:
     """
 
     def __init__(self, veff_obj, assume_solver_returns_S3: bool = True,
-                 smooth_unused=None):
+                 smooth_unused=None, solver_ht=None, solver_full=None):
         self.G      = cs.GF
         self.gstar  = cs.g_dof
         self.veff_obj    = veff_obj
-        self.solver_ht   = bs_ht.BounceSolverHighT(veff=self.veff_obj)
-        self.solver_full = bs_full.BounceSolver(veff=self.veff_obj)
+        self.solver_ht   = solver_ht   if solver_ht   is not None else bs_ht.BounceSolverHighT(veff=self.veff_obj)
+        self.solver_full = solver_full if solver_full is not None else bs_full.BounceSolver(veff=self.veff_obj)
         self.assume_solver_returns_S3 = assume_solver_returns_S3
+        self._phi_min_cache: dict = {}
 
     # ------------------------------------------------------------------ #
     # Internal: S_E from solvers                                           #
@@ -111,6 +112,10 @@ class FOPTUtilities:
         """
         Return the broken-phase field minimum at temperature T.
 
+        Results are cached so repeated calls within a session (e.g. nucTemp
+        followed by alpha at the same T_n) hit the cache instead of
+        re-running the minimiser.
+
         Parameters
         ----------
         is_HT : bool
@@ -120,11 +125,14 @@ class FOPTUtilities:
         ls0   : float
             Scalar quartic at mu0.
         """
-        mu = scale or np.pi
-        if is_HT:
-            return float(self.solver_ht.phi_min_Veff0(T, gD, mu, ls0))
-        else:
-            return float(self.solver_full.phi_min(T, gD, mu, ls0))
+        key = (float(T), float(gD), bool(is_HT), float(scale or np.pi), float(ls0))
+        if key not in self._phi_min_cache:
+            mu = scale or np.pi
+            if is_HT:
+                self._phi_min_cache[key] = float(self.solver_ht.phi_min_Veff0(T, gD, mu, ls0))
+            else:
+                self._phi_min_cache[key] = float(self.solver_full.phi_min(T, gD, mu, ls0))
+        return self._phi_min_cache[key]
 
     def hubble(self, phi_min, T, gD, scale=None, ls0=cs.lambdaS0) -> float:
         """
@@ -178,19 +186,56 @@ class FOPTUtilities:
     # Nucleation temperature                                               #
     # ------------------------------------------------------------------ #
 
-    def nucTemp(self, gD, is_HT=False, scale=None, ls0=cs.lambdaS0) -> float:
+    def nucTemp(self, gD, is_HT=False, scale=None, ls0=cs.lambdaS0,
+                tol_log10: float = 0.5) -> float:
         """
         Nucleation temperature T_n defined by Gamma/H^4 = 1.
 
-        Solved by minimising |log10(Next)| over T in (1e-4, 1e-1) GeV.
-        Returns NaN if no solution is found.
+        Coarse log-spaced scan over (1e-4, 0.35) GeV to bracket the root, then
+        brentq for precise root finding.  Falls back to minimize_scalar if no
+        sign change is found.  Returns NaN if no reliable solution exists.
+
+        tol_log10 : max accepted |log10(Gamma/H^4)| at the fallback solution.
         """
+        T_lo, T_hi = 1e-4, 0.35
+
+        def f(T):
+            return self.log10Next(T, gD, is_HT=is_HT, scale=scale, ls0=ls0)
+
+        # Coarse scan from HIGH to LOW T (cooling direction).
+        # f = log10(Gamma/H^4) starts negative at high T (large S3, slow nucleation)
+        # and crosses zero at T_n.  Scanning high→low finds the FIRST crossing
+        # during cooling, which is the physical nucleation temperature.
+        T_scan = np.geomspace(T_hi, T_lo, 50)
+        f_scan = np.full(len(T_scan), np.nan)
+        for i, T in enumerate(T_scan):
+            try:
+                f_scan[i] = f(T)
+            except Exception:
+                pass
+
+        valid = np.isfinite(f_scan)
+        for i in range(len(T_scan) - 1):
+            if valid[i] and valid[i + 1] and f_scan[i] * f_scan[i + 1] < 0:
+                try:
+                    T_a = min(T_scan[i], T_scan[i + 1])
+                    T_b = max(T_scan[i], T_scan[i + 1])
+                    root = optimize.brentq(f, T_a, T_b, xtol=1e-8, rtol=1e-7)
+                    return float(root)
+                except Exception:
+                    pass
+
+        # Fallback: minimise |f|; reject boundary hits and large residuals
         result = optimize.minimize_scalar(
-            lambda T: abs(self.log10Next(T, gD, is_HT=is_HT, scale=scale, ls0=ls0)),
-            bounds=(1e-4, 1e-1),
-            method="bounded",
+            lambda T: abs(f(T)), bounds=(T_lo, T_hi), method="bounded"
         )
-        return result.x if result.success else np.nan
+        if not result.success:
+            return np.nan
+        if abs(result.x - T_lo) < 1e-6 * T_lo or abs(result.x - T_hi) < 1e-4 * T_hi:
+            return np.nan
+        if abs(f(result.x)) > tol_log10:
+            return np.nan
+        return float(result.x)
 
     # ------------------------------------------------------------------ #
     # Critical temperature                                                 #
@@ -245,18 +290,28 @@ class FOPTUtilities:
             If True (default), use a centred finite difference (order 2).
             If False, use a forward difference (order 1).
         """
-        h  = 1e-4 * max(T_star, 1.0)
+        # Evaluate at three relative step sizes and take the median.
+        # This is robust against both (a) steps too large relative to T_star
+        # (which caused the old downward spikes) and (b) steps too small that
+        # amplify solver noise (which caused the upward spike at ~0.65).
+        estimates = []
+        for frac in (0.005, 0.02, 0.08):
+            h = frac * T_star
+            try:
+                if use_centered:
+                    T1  = T_star - h
+                    T2  = T_star + h
+                    ST1 = self.SE_cached(T1, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T1
+                    ST2 = self.SE_cached(T2, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T2
+                    estimates.append(T_star * (ST2 - ST1) / (T2 - T1))
+                else:
+                    T2  = T_star + h
+                    ST0 = self.SE_cached(T_star, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T_star
+                    ST2 = self.SE_cached(T2,     gD, is_HT=is_HT, scale=scale, ls0=ls0) / T2
+                    estimates.append(T_star * (ST2 - ST0) / (T2 - T_star))
+            except Exception:
+                pass
 
-        if use_centered:
-            T1    = max(T_star - h, 1e-8)
-            T2    = T_star + h
-            ST1   = self._SE_from_solver(T1, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T1
-            ST2   = self._SE_from_solver(T2, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T2
-            dST   = (ST2 - ST1) / (T2 - T1)
-        else:
-            T2    = T_star + h
-            ST0   = self._SE_from_solver(T_star, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T_star
-            ST2   = self._SE_from_solver(T2, gD, is_HT=is_HT, scale=scale, ls0=ls0) / T2
-            dST   = (ST2 - ST0) / (T2 - T_star)
-
-        return float(T_star * dST)
+        if not estimates:
+            return np.nan
+        return float(np.median(estimates))
