@@ -22,11 +22,14 @@ Two optimisations are applied:
   1. Pre-baked parameters: (gD, lambdaS, mS, V0) are computed once per SE call
      and captured in the closures — no dict lookups, no RGE ODE inside V.
 
-  2. Analytical dV: for Veff_HighT, dV/dS is computed from closed-form
-     derivatives of (Vtree, Vcw, V_highT, Vdaisy), eliminating the two extra
-     V evaluations that numerical finite-differencing would require per dV call.
-     For Veff (full JB), numerical dV is still used but on the pre-baked V,
-     so it is also faster than calling Veff directly.
+  2. Analytical dV: dV/dS is computed from closed-form derivatives of
+     (Vtree, Vcw, Vdaisy) — identical for both HighT and Full — plus the
+     thermal contribution:
+       - HighT: dV_T/dS uses _dJBhighexp_dy (exact closed form).
+       - Full:  dV_T/dS uses _dJBfull_dy, built from a CubicSpline fitted
+               once to the raw JB table data.  The linear interp1d in VeffRGE
+               would give a step-function derivative; the cubic spline gives
+               a smooth, accurate JB'(y) with negligible extra cost.
 
 Pipeline position
 -----------------
@@ -197,13 +200,33 @@ def _make_V_dV_full(veff: VeffRGE, T: float, gD0: float, scale: float, ls0: floa
     """
     Build fast (V, dV) callables for Veff (full J_B) at fixed (T, gD0, scale, ls0).
 
-    RGE parameters and V0 are pre-baked once.  dV is computed numerically
-    on the pre-baked V (JB' from the interpolation table is not smooth enough
-    to differentiate analytically from the piecewise-linear spline).
+    RGE parameters and V0 are pre-baked once.  dV is computed analytically
+    using the same structure as _make_V_dV_highT, replacing _dJBhighexp_dy
+    with _dJBfull_dy built from a CubicSpline of the raw JB table data.
+    The spline fitting is a one-time O(N log N) cost done here, not per dV call.
     """
     mu = float(scale) * float(T)
     T  = float(T)
     gD, lambdaS, mS = RGESolver.run_params(mu, gD0, ls0, cs.mS0)
+    Re1 = complex(1.0, 0.0)
+
+    # Build a smooth JB spline + its derivative from the existing interp1d table.
+    # VeffRGE._JB_interp stores the raw (y, JB) data in .x and .y.
+    _jb_x = veff._JB_interp.x
+    _jb_y = veff._JB_interp.y
+    _jb_cs  = CubicSpline(_jb_x, _jb_y, extrapolate=False)
+    _jb_dcs = _jb_cs.derivative()
+    _y_min, _y_max = float(_jb_x[0]), float(_jb_x[-1])
+
+    def _dJBfull_dy(y: float) -> float:
+        """dJB/dy from CubicSpline; returns 0 outside the table range."""
+        if y < _y_min or y > _y_max or y >= 600.0:
+            return 0.0
+        return float(_jb_dcs(y))
+
+    # Thermal self-energies (field-independent)
+    Pi_phi = (lambdaS / 3.0 + gD**2 / 4.0) * T**2
+    Pi_Ap  = gD**2 / 3.0 * T**2
 
     V0_val = float(np.real(
         veff.Vtree(0.0, lambdaS, mS)
@@ -211,9 +234,6 @@ def _make_V_dV_full(veff: VeffRGE, T: float, gD0: float, scale: float, ls0: floa
         + veff.VTfull(0.0, T, gD, lambdaS, mS)
         + veff.Vdaisy(0.0, T, gD, lambdaS, mS)
     ))
-
-    h_min   = max(1e-10 * T, 1e-13)
-    eps_rel = 1e-5
 
     def V(S: float) -> float:
         S = float(S)
@@ -226,8 +246,50 @@ def _make_V_dV_full(veff: VeffRGE, T: float, gD0: float, scale: float, ls0: floa
 
     def dV(S: float) -> float:
         S = float(S)
-        h = max(eps_rel * abs(S), h_min)
-        return (V(S + h) - V(S - h)) / (2.0 * h)
+
+        m1 = -mS**2 + 3.0 * lambdaS * S**2
+        m2 = -mS**2 + lambdaS * S**2
+        m3 = gD**2 * S**2
+
+        dm1 = 6.0 * lambdaS * S
+        dm2 = 2.0 * lambdaS * S
+        dm3 = 2.0 * gD**2 * S
+
+        dVt = -mS**2 * S + lambdaS * S**3
+
+        def _dcw(m2val, dm2val, c):
+            if m2val == 0.0:
+                return 0.0 + 0.0j
+            return dm2val * m2val * (2.0 * (np.log(Re1 * m2val / mu**2) - c) + 1.0)
+
+        dVcw = float(np.real(
+            _dcw(m1, dm1, 1.5)
+            + _dcw(m2, dm2, 1.5)
+            + 3.0 * _dcw(m3, dm3, 5.0 / 6.0)
+        ) / (64.0 * np.pi**2))
+
+        y1 = m1 / T**2
+        y2 = m2 / T**2
+        y3 = m3 / T**2
+        factor = T**2 / (2.0 * np.pi**2)
+        dVhT = factor * (
+            _dJBfull_dy(y1) * dm1
+            + _dJBfull_dy(y2) * dm2
+            + 3.0 * _dJBfull_dy(y3) * dm3
+        )
+
+        def _ddaisy(m2val, Pi, dm2val):
+            return 1.5 * ((Re1 * (m2val + Pi))**0.5 - (Re1 * m2val)**0.5) * dm2val
+
+        dVd = float(np.real(
+            -(T / (12.0 * np.pi)) * (
+                _ddaisy(m1, Pi_phi, dm1)
+                + _ddaisy(m2, Pi_phi, dm2)
+                + _ddaisy(m3, Pi_Ap, dm3)
+            )
+        ))
+
+        return dVt + dVcw + dVhT + dVd
 
     return V, dV
 
