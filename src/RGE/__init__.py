@@ -8,10 +8,12 @@ VeffFunc_RGE      : effective potential (tree + CW + thermal + daisy) with RGE r
 RGEsolver         : one-loop RGE integration for (gD, lambdaS, mS)
 BounceSolFull_RGE : bounce solver using the full J_B potential
 BounceSolHighT_RGE: bounce solver using the high-T expanded potential
-SE_interpolator   : spline interpolator for pre-computed log10(S_E) grids
-FOPT_RGE          : phase-transition utilities backed by the S_E spline
 FOPT_RGE_real     : phase-transition utilities using direct bounce-solver calls
 GW_RGE_spectrum   : generic GW spectrum from macroscopic FOPT parameters
 GW_bubbles_LVV22  : GW spectrum from bubble collisions (LVV22 template)
 GW_field_LV20     : GW spectrum from field-gradient / runaway walls (LV20 template)
+
+Fermion-model extensions (U(1)_D + complex scalar + Dirac fermion):
+RGESolver_fermion : 1-loop RGE for (gD, lambdaS, mS^2, y)
+VeffFunc_ferm_RGE : effective potential including fermion loops and thermal functions
 """

@@ -187,17 +187,21 @@ class FOPTUtilities:
     # ------------------------------------------------------------------ #
 
     def nucTemp(self, gD, is_HT=False, scale=None, ls0=cs.lambdaS0,
-                tol_log10: float = 0.5) -> float:
+                tol_log10: float = 0.5,
+                T_lo: float = 1e-4, T_hi: float = 0.35,
+                n_scan: int = 50) -> float:
         """
         Nucleation temperature T_n defined by Gamma/H^4 = 1.
 
-        Coarse log-spaced scan over (1e-4, 0.35) GeV to bracket the root, then
+        Coarse log-spaced scan over (T_lo, T_hi) GeV to bracket the root, then
         brentq for precise root finding.  Falls back to minimize_scalar if no
         sign change is found.  Returns NaN if no reliable solution exists.
 
-        tol_log10 : max accepted |log10(Gamma/H^4)| at the fallback solution.
+        T_lo, T_hi : temperature scan bounds [GeV].  Widen for models where T_n
+                     may fall outside the default (1e-4, 0.35) range.
+        n_scan     : number of scan points (default 50).
+        tol_log10  : max accepted |log10(Gamma/H^4)| at the fallback solution.
         """
-        T_lo, T_hi = 1e-4, 0.35
 
         def f(T):
             return self.log10Next(T, gD, is_HT=is_HT, scale=scale, ls0=ls0)
@@ -206,7 +210,7 @@ class FOPTUtilities:
         # f = log10(Gamma/H^4) starts negative at high T (large S3, slow nucleation)
         # and crosses zero at T_n.  Scanning high→low finds the FIRST crossing
         # during cooling, which is the physical nucleation temperature.
-        T_scan = np.geomspace(T_hi, T_lo, 50)
+        T_scan = np.geomspace(T_hi, T_lo, n_scan)
         f_scan = np.full(len(T_scan), np.nan)
         for i, T in enumerate(T_scan):
             try:
@@ -241,11 +245,12 @@ class FOPTUtilities:
     # Critical temperature                                                 #
     # ------------------------------------------------------------------ #
 
-    def critTemp(self, gD, is_HT=False, scale=None, ls0=cs.lambdaS0) -> float:
+    def critTemp(self, gD, is_HT=False, scale=None, ls0=cs.lambdaS0,
+                T_lo: float = 1e-4, T_hi: float = 0.35) -> float:
         """
         Critical temperature T_c defined by V_eff(phi_min, T_c) = 0.
 
-        Solved by minimising |V_eff(phi_min)| over T in (1e-4, 0.35) GeV.
+        Solved by minimising |V_eff(phi_min)| over T in (T_lo, T_hi) GeV.
         Returns NaN if no solution is found.
         """
         def obj(T):
@@ -254,7 +259,7 @@ class FOPTUtilities:
                 return abs(self.veff_obj.Veff_HighT(phi_min, T, gD, scale or np.pi, ls0))
             return abs(self.veff_obj.Veff(phi_min, T, gD, scale or np.pi, ls0))
 
-        result = optimize.minimize_scalar(obj, bounds=(1e-4, 0.35), method="bounded")
+        result = optimize.minimize_scalar(obj, bounds=(T_lo, T_hi), method="bounded")
         return result.x if result.success else np.nan
 
     # ------------------------------------------------------------------ #

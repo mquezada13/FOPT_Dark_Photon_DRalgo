@@ -20,11 +20,13 @@ To adapt this file for a different model, update the sections marked
 GF       = 6.7088e-39   # Reduced Newton constant 1/M_Pl^2 [GeV^-2]
 MPL      = 2.4e18       # Reduced Planck mass [GeV]
 ab       = 5.4076       # Logarithmic constant appearing in the high-T thermal function J_B
+af       = 2.6350       # Fermionic analogue of ab (J_F high-T expansion); af = ab - 4*ln(2)
 
 # ==============================================================
 # Thermodynamic parameters
 # ==============================================================
-g_dof = 10.75 + 4       # Effective relativistic d.o.f. at the transition (g_SM + 4 dark sector)
+g_dof      = 10.75 + 4       # Effective d.o.f.: g_SM + dark sector (scalar + photon transverse)
+g_dof_ferm = 10.75 + 4 + 3.5 # Same + one Dirac fermion (4 dof × 7/8)
 
 # Cosmological redshift factor for GW peak frequency
 R = 1.67e-5 * (g_dof / 100) ** (-1 / 3)
@@ -52,8 +54,8 @@ SNRthr  = SNR_THR   # Alias used by GW_field_LV20 module
 # These are the IR boundary conditions at mu0 = 1 GeV.
 # Change these (and the beta functions in RGEsolver.py) when studying a new model.
 gD0      = 0.6      # Dark gauge coupling at mu0
-lambdaS0 = 1e-10   # Scalar quartic coupling at mu0
-mS0      = 1e-10   # Scalar mass parameter at mu0 [GeV]
+lambdaS0 = 0   # Scalar quartic coupling at mu0
+mS0      = 0   # Scalar mass parameter at mu0 [GeV]
 
 # ==============================================================
 # GW spectral shape presets  (model-specific)

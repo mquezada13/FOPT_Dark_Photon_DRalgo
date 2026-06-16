@@ -43,6 +43,7 @@ from scipy.interpolate import CubicSpline
 import constants as cs
 from src.RGE.VeffFunc_RGE import VeffRGE
 from src.RGE.RGEsolver import RGESolver
+from src.RGE.RGESolver_fermion import RGESolver_fermion
 from src.RGE.bounce_solver import Find_critbubble, compute_S3
 
 
@@ -295,6 +296,117 @@ def _make_V_dV_full(veff: VeffRGE, T: float, gD0: float, scale: float, ls0: floa
 
 
 # --------------------------------------------------------------------------- #
+# Fermion-model helpers                                                        #
+# --------------------------------------------------------------------------- #
+
+def _dJFhighexp_dy(y: float) -> float:
+    """
+    Analytical derivative of JFhighexp(y) with respect to y.
+
+    JFhighexp(y) = 7π⁴/360 - (π²/24)y - (1/32)y²(ln|y| - af)
+
+    d/dy[...] = -π²/24 - (y/32)(2(ln|y| - af) + 1)
+    """
+    log_y = np.log(max(1e-10, abs(y)))
+    return -np.pi**2 / 24.0 - (y / 32.0) * (2.0 * (log_y - cs.af) + 1.0)
+
+
+def _make_V_dV_highT_ferm(veff, T: float, gD0: float, scale: float, ls0: float):
+    """
+    Build fast (V, dV) callables for VeffRGE_fermion at fixed (T, gD0, scale, ls0).
+
+    Uses RGESolver_fermion to pre-bake (gD, lambdaS, mS2, y) once.
+    dV includes the fermion CW loop and the JF thermal contribution analytically.
+    """
+    mu  = float(scale) * float(T)
+    T   = float(T)
+    gD, lambdaS, mS2, y = RGESolver_fermion.run_params(
+        mu, gD0, ls0, veff.mS02, veff.y0
+    )
+    Re1 = complex(1.0, 0.0)
+
+    # Debye masses — fermion model (field-independent)
+    Pi_phi = (lambdaS / 3.0 + gD**2 / 4.0 + y**2 / 12.0) * T**2
+    Pi_Ap  = 5.0 * gD**2 / 12.0 * T**2
+
+    V0_val = float(np.real(
+        veff.Vtree(0.0, lambdaS, mS2)
+        + veff.Vcw(0.0, mu, gD, y, lambdaS, mS2)
+        + veff._VT_highT(0.0, T, gD, y, lambdaS, mS2)
+        + veff.Vdaisy(0.0, T, gD, y, lambdaS, mS2)
+    ))
+
+    def V(S: float) -> float:
+        S = float(S)
+        return float(np.real(
+            veff.Vtree(S, lambdaS, mS2)
+            + veff.Vcw(S, mu, gD, y, lambdaS, mS2)
+            + veff._VT_highT(S, T, gD, y, lambdaS, mS2)
+            + veff.Vdaisy(S, T, gD, y, lambdaS, mS2)
+        )) - V0_val
+
+    def dV(S: float) -> float:
+        S = float(S)
+
+        # Field-dependent masses (mass-squared)
+        m1 = -mS2 + 3.0 * lambdaS * S**2   # mPhi2
+        m2 = -mS2 + lambdaS * S**2          # mSigma2
+        m3 = gD**2 * S**2                    # mAp2
+        m4 = y**2 * S**2 / 2.0              # mchi2
+
+        # dm²/dS
+        dm1 = 6.0 * lambdaS * S
+        dm2 = 2.0 * lambdaS * S
+        dm3 = 2.0 * gD**2 * S
+        dm4 = y**2 * S
+
+        # dVtree/dS
+        dVt = -mS2 * S + lambdaS * S**3
+
+        # dVcw/dS  — d/dS [m²·(2(log(m²/μ²)−c)+1)·dm²/dS] / (64π²)
+        def _dcw(m2val, dm2val, c):
+            if m2val == 0.0:
+                return 0.0 + 0.0j
+            return dm2val * m2val * (2.0 * (np.log(Re1 * m2val / mu**2) - c) + 1.0)
+
+        dVcw = float(np.real(
+            _dcw(m1, dm1, 1.5)
+            + _dcw(m2, dm2, 1.5)
+            + 3.0 * _dcw(m3, dm3, 5.0 / 6.0)
+            - 4.0 * _dcw(m4, dm4, 1.5)      # fermion: factor −4
+        ) / (64.0 * np.pi**2))
+
+        # dV_highT/dS — bosons (JB) + fermion (JF)
+        y1 = m1 / T**2
+        y2 = m2 / T**2
+        y3 = m3 / T**2
+        y4 = m4 / T**2
+        factor = T**2 / (2.0 * np.pi**2)
+        dVhT = factor * (
+            _dJBhighexp_dy(y1) * dm1
+            + _dJBhighexp_dy(y2) * dm2
+            + 3.0 * _dJBhighexp_dy(y3) * dm3
+            - 4.0 * _dJFhighexp_dy(y4) * dm4   # fermion: factor −4
+        )
+
+        # dVdaisy/dS  — bosons only (fermions have no zero Matsubara mode)
+        def _ddaisy(m2val, Pi, dm2val):
+            return 1.5 * ((Re1 * (m2val + Pi))**0.5 - (Re1 * m2val)**0.5) * dm2val
+
+        dVd = float(np.real(
+            -(T / (12.0 * np.pi)) * (
+                _ddaisy(m1, Pi_phi, dm1)
+                + _ddaisy(m2, Pi_phi, dm2)
+                + _ddaisy(m3, Pi_Ap,  dm3)
+            )
+        ))
+
+        return dVt + dVcw + dVhT + dVd
+
+    return V, dV
+
+
+# --------------------------------------------------------------------------- #
 # High-T ODE solver                                                            #
 # --------------------------------------------------------------------------- #
 
@@ -389,6 +501,54 @@ class BounceODEFull:
         (S3, phi0) : (float, float)
         """
         V, dV = _make_V_dV_full(self.veff, T, gD0, scale, ls0)
+        d2V0  = _d2V_at_origin(V, T)
+
+        kw = dict(phi_scan_n=_DEFAULT_N_SCAN, n_pts=_DEFAULT_N_PTS,
+                  rtol=_DEFAULT_RTOL, atol=_DEFAULT_ATOL, verbose=False)
+        kw.update(find_kwargs)
+
+        profile = Find_critbubble("auto", T, V, dV, d2V0=d2V0, **kw)
+        S3, _, _ = compute_S3(profile, V)
+        return float(S3), float(profile.phi0)
+
+
+# --------------------------------------------------------------------------- #
+# Fermion-model ODE solver (high-T)                                            #
+# --------------------------------------------------------------------------- #
+
+class BounceODEHighT_fermion:
+    """
+    ODE bounce solver for VeffRGE_fermion with the high-T expanded potential.
+
+    Drop-in replacement for BounceODEHighT when the potential includes a
+    Dirac fermion.  Uses _make_V_dV_highT_ferm, which:
+      - runs the fermion RGE (gD, lambdaS, mS2, y)
+      - includes the fermion CW loop in dV  (-4 factor, mchi2 = y²S²/2)
+      - includes the JF thermal contribution in dV  (-4 * dJF/dy * dm4/dS)
+      - uses the modified Debye masses (PiPhi with +y²/12, PiAp = 5/12 gD² T²)
+
+    Parameters
+    ----------
+    veff : VeffRGE_fermion
+        Must be an instance of VeffRGE_fermion (carries y0 and mS02).
+    """
+
+    def __init__(self, veff):
+        self.veff = veff
+
+    def phi_min_Veff0(self, T, gD, scale, ls0, bound_min=(1e-7, 1e7)):
+        """Zero-T RGE minimum."""
+        return _phi_min_Veff0(self.veff, T, gD, scale, ls0)
+
+    def SE(self, T, gD0, scale, ls0, **find_kwargs) -> tuple:
+        """
+        Compute S3(T) via ODE shooting using Veff_HighT of the fermion model.
+
+        Returns
+        -------
+        (S3, phi0) : (float, float)
+        """
+        V, dV = _make_V_dV_highT_ferm(self.veff, T, gD0, scale, ls0)
         d2V0  = _d2V_at_origin(V, T)
 
         kw = dict(phi_scan_n=_DEFAULT_N_SCAN, n_pts=_DEFAULT_N_PTS,

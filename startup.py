@@ -10,13 +10,17 @@ Run this file at the start of a Jupyter notebook or IPython session:
 After loading, the following objects are available in the global namespace:
   - numpy  (np), scipy sub-packages, matplotlib (plt)
   - cs     : physical constants module
-  - veff   : VeffFunc_RGE module
-  - bs_full / bs_ht : bounce-solver modules
-  - fopt / fopt_real : phase-transition utility modules
-  - rge    : RGE solver module
+  - veff   : VeffFunc_RGE module  (dark photon, no fermion)
+  - bs_full / bs_ht : bounce-solver modules (compatible with both Veff classes)
+  - fopt_real : phase-transition utility module (direct bounce solvers)
+  - rge    : RGE solver module  (no fermion)
   - gw_spec / gw_bub / gw_lv20 : GW spectrum modules
   - ps     : plot style utilities
   - new_figure() : creates a pre-formatted (fig, ax) pair
+
+Fermion-model extensions (U(1)_D + complex scalar + Dirac fermion):
+  - veff_ferm : VeffFunc_ferm_RGE module  (VeffRGE_fermion class)
+  - rge_ferm  : RGESolver_fermion module
 """
 
 import os
@@ -51,12 +55,14 @@ import constants as cs
 from src.RGE import VeffFunc_RGE   as veff
 from src.RGE import BounceSolFull_RGE  as bs_full
 from src.RGE import BounceSolHighT_RGE as bs_ht
-from src.RGE import FOPT_RGE       as fopt
 from src.RGE import FOPT_RGE_real  as fopt_real
 from src.RGE import RGEsolver      as rge
 from src.RGE import GW_RGE_spectrum as gw_spec
 from src.RGE import GW_bubbles_LVV22 as gw_bub
 from src.RGE import GW_field_LV20  as gw_lv20
+
+from src.RGE import VeffFunc_ferm_RGE  as veff_ferm
+from src.RGE import RGESolver_fermion  as rge_ferm
 
 from utils import plot_styles as ps
 
