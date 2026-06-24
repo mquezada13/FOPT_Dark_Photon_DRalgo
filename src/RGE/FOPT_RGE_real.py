@@ -41,7 +41,7 @@ class FOPTUtilities:
         If True (default), the solvers return S3(T).  Set to False if your
         custom solver returns S3/T instead; the code multiplies by T internally.
     smooth_unused : any
-        Accepted for API compatibility with FOPT_RGE.FOPTUtilities; ignored.
+        Accepted but ignored (kept for call-site compatibility).
     """
 
     def __init__(self, veff_obj, assume_solver_returns_S3: bool = True,

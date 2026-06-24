@@ -14,7 +14,7 @@ updated for the new model.
 
 Pipeline position
 -----------------
-VeffRGE  <--  BounceSolFull_RGE / BounceSolHighT_RGE  <--  FOPT_RGE / FOPT_RGE_real
+VeffRGE  <--  BounceSolFull_RGE / BounceSolHighT_RGE / BounceODE_RGE  <--  FOPT_RGE_real
 """
 
 import numpy as np
