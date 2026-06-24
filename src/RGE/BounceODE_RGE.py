@@ -463,8 +463,9 @@ class BounceODEFull:
     ODE bounce solver for the full finite-T effective potential (exact J_B).
 
     Drop-in replacement for BounceSolver with the same SE() interface.
-    Uses numerical dV on a pre-baked V (analytical dV is not available
-    because J_B is a piecewise-linear interpolation).
+    Uses analytical dV built from a CubicSpline fitted to the raw J_B table,
+    giving a smooth derivative without the step-function noise of the original
+    piecewise-linear interp1d.
 
     Parameters
     ----------

@@ -7,8 +7,8 @@ temperatures, critical temperatures, GW parameters (alpha, beta/H),
 and related quantities by calling the bounce solvers directly at each
 (T, gD) point.
 
-Use FOPT_RGE.py instead when a pre-computed S_E grid is available; it is
-orders of magnitude faster for scans.
+For parameter scans, pre-compute S_E on a grid and interpolate externally
+to avoid calling the bounce solver at every (T, gD) point.
 
 Pipeline position
 -----------------

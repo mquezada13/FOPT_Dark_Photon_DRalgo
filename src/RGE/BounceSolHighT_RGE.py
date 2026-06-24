@@ -194,8 +194,10 @@ class BounceSolverHighT:
             veff_val = self.veff.Veff_HighT(S, T, gD, scale, ls0)
             dvt_val  = self.dVt(S, phi0, a1, a2, a3, a4)
 
-            dvt_val = max(np.abs(dvt_val), 1e-65)
+            dvt_val = np.sign(dvt_val) * max(abs(dvt_val), 1e-65)
             diff    = max(veff_val - vt_val, 0.0)
+            if not (np.isfinite(diff) and np.isfinite(dvt_val)):
+                return 0.0
             return diff**1.5 / dvt_val**2
 
         result = quad(integrand, 0, phi0, limit=5_000, epsrel=1e-6, epsabs=1e-6)[0]

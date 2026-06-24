@@ -150,24 +150,24 @@ class VeffRGE_fermion:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def JBhighexp(y):
+    def JBhighexp(x):
         """High-T expansion of the bosonic thermal function J_B(y)."""
         pi = np.pi
         return (
             -pi**4 / 45.0
-            + (pi**2 / 12.0) * y
-            - (pi / 6.0) * np.maximum(0.0, y) ** 1.5
-            - (1.0 / 32.0) * y**2 * (np.log(np.maximum(1e-10, np.abs(y))) - cs.ab)
+            + (pi**2 / 12.0) * x
+            - (pi / 6.0) * np.maximum(0.0, x) ** 1.5
+            - (1.0 / 32.0) * x**2 * (np.log(np.maximum(1e-10, np.abs(x))) - cs.ab)
         )
 
     @staticmethod
-    def JFhighexp(y):
+    def JFhighexp(x):
         """High-T expansion of the fermionic thermal function J_F(y)."""
         pi = np.pi
         return (
             7.0 * pi**4 / 360.0
-            - (pi**2 / 24.0) * y
-            - (1.0 / 32.0) * y**2 * (np.log(np.maximum(1e-10, np.abs(y))) - cs.af)
+            - (pi**2 / 24.0) * x
+            - (1.0 / 32.0) * x**2 * (np.log(np.maximum(1e-10, np.abs(x))) - cs.af)
         )
 
     @classmethod
@@ -185,7 +185,7 @@ class VeffRGE_fermion:
         )
 
     # ------------------------------------------------------------------ #
-    # Pipeline-compatible effective potentials                             #
+    # Pipeline-compatible effective potentials                           #
     # ------------------------------------------------------------------ #
 
     def Veff0(self, S, gD0, ls0=0.0):

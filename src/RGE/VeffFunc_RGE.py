@@ -18,7 +18,6 @@ VeffRGE  <--  BounceSolFull_RGE / BounceSolHighT_RGE  <--  FOPT_RGE / FOPT_RGE_r
 """
 
 import numpy as np
-from scipy.special import kn
 from scipy.interpolate import interp1d
 
 import constants as cs
