@@ -145,6 +145,22 @@ def _make_cross_zero_event():
     return event
 
 
+def _make_tail_event(tail_phi: float):
+    """
+    Tail-convergence event: stop when phi decays below tail_phi from above.
+
+    This mirrors the ``hit_tail`` event in the student solver: the integration
+    terminates naturally once the profile has relaxed to a small fraction of
+    phi0, so r_max no longer needs to be large enough to contain the full tail.
+    """
+    def event(r, y):
+        return y[0] - tail_phi
+
+    event.terminal = True
+    event.direction = -1
+    return event
+
+
 # ============================================================================
 # Barrier scale from the potential
 # ============================================================================
@@ -499,14 +515,31 @@ def _integrate_profile(
     r_max: float,
     rtol: float,
     atol: float,
+    tail_phi: Optional[float] = None,
 ):
     """
     Integrate the O(3) bounce equation from small r out to r_max.
 
-    We stop early if the profile crosses zero, which signals overshoot.
+    Two early-stop events are supported:
+      * event[0]: overshoot — phi crosses zero from above.
+      * event[1]: tail convergence — phi drops below tail_phi (only when
+        tail_phi is provided). This is the same as the ``hit_tail`` event in
+        the student solver: the integration stops naturally once the profile
+        has decayed enough, so r_max need not be enormous.
+
+    Parameters
+    ----------
+    tail_phi : float or None
+        Threshold for the tail event. Typically tail_frac * phi0. When None
+        the tail event is not registered and behaviour is identical to the
+        original solver.
     """
     phi_init, dphi_init = _initial_conditions(phi0, dV, r_min)
     zero_event = _make_cross_zero_event()
+
+    events = [zero_event]
+    if tail_phi is not None and tail_phi > 0.0:
+        events.append(_make_tail_event(float(tail_phi)))
 
     sol = solve_ivp(
         fun=lambda r, y: _bounce_rhs(r, y, dV),
@@ -516,7 +549,7 @@ def _integrate_profile(
         rtol=rtol,
         atol=atol,
         dense_output=True,
-        events=[zero_event],
+        events=events,
     )
     return sol
 
@@ -744,8 +777,8 @@ def Find_critbubble(
     dV: Callable,
     d2V0: Optional[float] = None,
     *,
-    r_min: float = 1e-4,
-    r_max: Optional[float] = None,
+    r_min: float = 1e-6,
+    r_max: float = None,
     n_pts: int = 1200,
     bisect_tol: float = 1e-6,
     bisect_max: int = 80,
@@ -760,6 +793,8 @@ def Find_critbubble(
     phi_scan_n: int = 4000,
     max_rmax_retries: int = 5,
     rmax_growth: float = 3.0,
+    r_max_cap: Optional[float] = None,
+    tail_frac: float = 1e-6,
 ) -> BounceProfile:
     """
     Compute the O(3)-symmetric bounce profile.
@@ -783,6 +818,20 @@ def Find_critbubble(
         Potential and first derivative.
     d2V0 : float or None
         False-vacuum curvature V''(0), used only to estimate r_max.
+    r_max_cap : float or None
+        Hard upper limit for the outer radius used in the tail-growth loop.
+        When provided, r_max grows by rmax_growth each retry until the tail
+        converges or r_max_cap is reached — the max_rmax_retries count is
+        then ignored. Pass np.inf (or 1e15) to allow unlimited growth.
+        When None (default), old behaviour is used: at most max_rmax_retries
+        growth steps.
+    tail_frac : float
+        The final integration fires a terminal event when
+        ``phi(r) / phi0 < tail_frac``, stopping the ODE as soon as the
+        tail has relaxed — exactly like the ``hit_tail`` event in the
+        student solver. This means r_max no longer needs to be tuned to
+        contain the full tail; the integration finds the natural stopping
+        radius by itself. Default 1e-6.
     """
 
     # ------------------------------------------------------------------
@@ -876,8 +925,13 @@ def Find_critbubble(
         print(f"[Find_critbubble] phi_0 = {phi0_sol:.12g}")
 
     # ------------------------------------------------------------------
-    # Final profile integration. If tail is too long, grow r_max.
+    # Final profile integration.
+    # The tail event (event[1]) fires when phi drops to tail_frac * phi0,
+    # so the integration terminates naturally without needing a huge r_max.
+    # If the tail has not decayed by r_max, we grow r_max and retry.
     # ------------------------------------------------------------------
+    _tail_phi = tail_frac * abs(phi0_sol)
+
     sol = _integrate_profile(
         phi0=phi0_sol,
         dV=dV,
@@ -885,16 +939,30 @@ def Find_critbubble(
         r_max=r_max_eff,
         rtol=rtol,
         atol=atol,
+        tail_phi=_tail_phi,
     )
 
     if sol.y.shape[1] == 0:
         raise RuntimeError("Final profile integration failed immediately.")
 
+    _tail_fired = len(sol.t_events) > 1 and len(sol.t_events[1]) > 0
     tail_ratio = abs(sol.y[0, -1]) / max(abs(phi0_sol), 1e-14)
+
+    # Cap for the tail-growth loop.
+    # When r_max_cap is given, use it as the hard limit (retry count ignored).
+    # When r_max_cap is None, fall back to old max_rmax_retries behaviour.
+    _hard_cap = float(r_max_cap) if r_max_cap is not None else np.inf
+    _max_loop = 10000 if r_max_cap is not None else max_rmax_retries
     n_retry = 0
 
-    while len(sol.t_events[0]) == 0 and tail_ratio > 1e-4 and n_retry < max_rmax_retries:
-        r_max_eff *= rmax_growth
+    while (
+        len(sol.t_events[0]) == 0   # no overshoot
+        and not _tail_fired          # tail event did not fire
+        and tail_ratio > 1e-4        # tail not yet small enough
+        and n_retry < _max_loop
+        and r_max_eff < _hard_cap
+    ):
+        r_max_eff = min(r_max_eff * rmax_growth, _hard_cap)
 
         if verbose:
             print(
@@ -909,17 +977,24 @@ def Find_critbubble(
             r_max=r_max_eff,
             rtol=rtol,
             atol=atol,
+            tail_phi=_tail_phi,
         )
 
         if sol.y.shape[1] == 0:
             raise RuntimeError("Profile integration failed after increasing r_max.")
 
+        _tail_fired = len(sol.t_events) > 1 and len(sol.t_events[1]) > 0
         tail_ratio = abs(sol.y[0, -1]) / max(abs(phi0_sol), 1e-14)
         n_retry += 1
 
-    # If it overshot during the final solve, store only up to crossing.
+    # Determine storage endpoint:
+    #   overshoot → stop at zero crossing
+    #   tail event fired → stop when phi = tail_phi
+    #   otherwise → store up to r_max
     if len(sol.t_events[0]) > 0:
         r_store = sol.t_events[0][0]
+    elif _tail_fired:
+        r_store = sol.t_events[1][0]
     else:
         r_store = sol.t[-1]
 
